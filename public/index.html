@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RHD API — Backend</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%2348426D'/%3E%3Cstop offset='50%25' stop-color='%23F1AA9B'/%3E%3Cstop offset='100%25' stop-color='%23DB2777'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='32' height='32' rx='9' fill='url(%23g)'/%3E%3Ctext x='16' y='21' font-family='Arial' font-size='13' font-weight='bold' fill='white' text-anchor='middle'%3ERH%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --ink: #48426D;
+      --ink-2: #5e5891;
+      --peach: #F1AA9B;
+      --gold: #F0C38E;
+      --pink: #DB2777;
+      --bg: #09090b;
+      --panel: #101013;
+      --border: #27272a;
+      --text: #fafafa;
+      --muted: #a1a1aa;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", -apple-system, sans-serif;
+      background:
+        radial-gradient(900px 400px at 80% -10%, rgba(72, 66, 109, 0.35), transparent 60%),
+        radial-gradient(700px 300px at 10% 0%, rgba(241, 170, 155, 0.12), transparent 55%),
+        var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 24px 80px; }
+    header.brand { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+    .logo { display: flex; align-items: center; gap: 12px; }
+    .logo-badge {
+      width: 44px; height: 44px; border-radius: 12px;
+      background: linear-gradient(135deg, var(--ink), var(--peach) 50%, var(--pink));
+      display: grid; place-items: center; font-weight: 700; color: #fff;
+      box-shadow: 0 8px 24px rgba(241, 170, 155, 0.25);
+      position: relative;
+    }
+    .logo-badge::after {
+      content: ""; position: absolute; right: -2px; bottom: -2px;
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #34D399; border: 2px solid #0b0b0e;
+    }
+    .logo-name { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+    .logo-name span { background: linear-gradient(90deg, var(--ink-2), var(--peach), var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 8px 14px; border-radius: 999px;
+      border: 1px solid var(--border); background: var(--panel);
+      font-size: 13px; color: var(--muted);
+    }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #71717a; }
+    .status-dot.ok { background: #34D399; box-shadow: 0 0 10px rgba(52, 211, 153, 0.7); }
+    .status-dot.down { background: #f87171; box-shadow: 0 0 10px rgba(248, 113, 113, 0.7); }
+    .hero { margin: 56px 0 40px; }
+    .hero .eyebrow {
+      font-family: ui-monospace, monospace; font-size: 12px; letter-spacing: 0.3em;
+      text-transform: uppercase; color: var(--peach);
+    }
+    .hero h1 { font-size: clamp(30px, 5vw, 44px); font-weight: 700; letter-spacing: -0.03em; margin-top: 12px; line-height: 1.1; }
+    .hero h1 em { font-style: normal; background: linear-gradient(90deg, var(--ink-2), var(--peach), var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .hero p { margin-top: 14px; max-width: 620px; color: var(--muted); font-size: 16px; }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; margin: 32px 0 48px; }
+    .stat {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
+      padding: 18px 20px;
+    }
+    .stat .num { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; color: var(--peach); }
+    .stat .label { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    h2.section {
+      font-size: 15px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+      color: var(--muted); margin: 0 0 16px;
+    }
+    h2.section::before { content: "// "; color: var(--peach); }
+    .endpoints { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--panel); margin-bottom: 48px; }
+    .endpoint { display: grid; grid-template-columns: 84px 1fr; gap: 16px; padding: 14px 20px; border-top: 1px solid var(--border); align-items: baseline; }
+    .endpoint:first-child { border-top: none; }
+    .method { font-family: ui-monospace, monospace; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; padding: 4px 0; border-radius: 6px; text-align: center; color: #fff; }
+    .m-get { background: #16a34a; } .m-post { background: #2563eb; } .m-put { background: #d97706; } .m-patch { background: #7c3aed; } .m-delete { background: #dc2626; }
+    .route .path { font-family: ui-monospace, monospace; font-size: 13.5px; color: var(--text); word-break: break-all; }
+    .route .desc { font-size: 13px; color: var(--muted); margin-top: 2px; }
+    .route .lock { font-size: 11px; color: var(--gold); margin-left: 8px; vertical-align: 1px; }
+    footer { margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+    footer code { font-family: ui-monospace, monospace; background: var(--panel); border: 1px solid var(--border); padding: 3px 8px; border-radius: 6px; color: var(--peach); }
+    @media (max-width: 560px) {
+      .endpoint { grid-template-columns: 70px 1fr; }
+      .wrap { padding: 32px 16px 64px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="brand">
+      <div class="logo">
+        <div class="logo-badge">RH</div>
+        <div class="logo-name">RHD <span>API</span></div>
+      </div>
+      <span class="status-pill" id="serverPill">
+        <span class="status-dot" id="serverDot"></span>
+        <span id="serverState">Checking…</span>
+      </span>
+    </header>
+
+    <section class="hero">
+      <p class="eyebrow">Rasel Hossain · Backend API</p>
+      <h1>REST API for the <em>portfolio</em> platform</h1>
+      <p>
+        Authentication, projects, blog posts, contacts, newsletter subscribers,
+        analytics and media uploads — served by an Express + Prisma backend on
+        PostgreSQL.
+      </p>
+    </section>
+
+    <section class="stats">
+      <div class="stat"><div class="num" id="stHealth">–</div><div class="label">Health</div></div>
+      <div class="stat"><div class="num" id="stTime">–</div><div class="label">Uptime</div></div>
+      <div class="stat"><div class="num" id="stUptime">–</div><div class="label">Node.js uptime</div></div>
+    </section>
+
+    <h2 class="section">Endpoints</h2>
+    <div class="endpoints" id="endpoints"></div>
+
+    <footer>
+      <span>© <span id="year"></span> Rasel Hossain. All rights reserved.</span>
+      <span>Status: <code id="footHealth">–</code></span>
+    </footer>
+  </div>
+
+  <script>
+    const BASE = "/api";
+    const METHODS = { get: "m-get", post: "m-post", put: "m-put", patch: "m-patch", delete: "m-delete" };
+    const AUTH_EMOJI = "🔒";
+
+    const routes = [
+      { method: "get",    path: "/api/health", desc: "Liveness probe — server health & uptime." },
+      { method: "post",   path: "/api/auth/register", desc: "Create a new user account.", auth: true },
+      { method: "post",   path: "/api/auth/login", desc: "Sign in and receive an auth cookie.", auth: true },
+      { method: "post",   path: "/api/auth/logout", desc: "Invalidate the session." },
+      { method: "get",    path: "/api/auth/me", desc: "Return the currently authenticated user." },
+      { method: "get",    path: "/api/projects", desc: "List all portfolio projects." },
+      { method: "get",    path: "/api/projects/:slug", desc: "Fetch a single project by slug." },
+      { method: "post",   path: "/api/projects", desc: "Create a project.", auth: true },
+      { method: "put",    path: "/api/projects/:id", desc: "Update a project.", auth: true },
+      { method: "delete", path: "/api/projects/:id", desc: "Delete a project.", auth: true },
+      { method: "get",    path: "/api/posts", desc: "List all blog posts." },
+      { method: "get",    path: "/api/posts/:slug", desc: "Fetch a single post by slug." },
+      { method: "post",   path: "/api/posts", desc: "Create a post.", auth: true },
+      { method: "put",    path: "/api/posts/:id", desc: "Update a post.", auth: true },
+      { method: "delete", path: "/api/posts/:id", desc: "Delete a post.", auth: true },
+      { method: "post",   path: "/api/contacts", desc: "Submit a contact form." },
+      { method: "get",    path: "/api/contacts", desc: "List contact submissions.", auth: true },
+      { method: "get",    path: "/api/contacts/:id", desc: "Fetch one contact.", auth: true },
+      { method: "patch",  path: "/api/contacts/:id/status", desc: "Update contact status.", auth: true },
+      { method: "delete", path: "/api/contacts/:id", desc: "Delete a contact.", auth: true },
+      { method: "post",   path: "/api/subscribers/subscribe", desc: "Subscribe a newsletter email." },
+      { method: "post",   path: "/api/subscribers/unsubscribe", desc: "Unsubscribe an email." },
+      { method: "get",    path: "/api/subscribers", desc: "List newsletter subscribers.", auth: true },
+      { method: "get",    path: "/api/analytics", desc: "Aggregated analytics.", auth: true },
+      { method: "post",   path: "/api/analytics/track", desc: "Track a page view." },
+      { method: "post",   path: "/api/upload/image", desc: "Upload an image to R2.", auth: true },
+      { method: "delete", path: "/api/upload/:key", desc: "Delete an uploaded object.", auth: true },
+      { method: "post",   path: "/api/email/send", desc: "Send a custom email.", auth: true },
+      { method: "post",   path: "/api/email/bulk", desc: "Send bulk emails.", auth: true },
+      { method: "post",   path: "/api/email/test", desc: "Send a test email.", auth: true },
+    ];
+
+    const el = document.getElementById("endpoints");
+    el.innerHTML = routes
+      .map(
+        (r) => `
+        <div class="endpoint">
+          <span class="method ${METHODS[r.method]}">${r.method.toUpperCase()}</span>
+          <div class="route">
+            <span class="path">${r.path}</span>${r.auth ? `<span class="lock" title="Admin required">${AUTH_EMOJI} ADMIN</span>` : ""}
+            <div class="desc">${r.desc}</div>
+          </div>
+        </div>`
+      )
+      .join("");
+
+    async function checkHealth() {
+      const pill = document.getElementById("serverPill");
+      const dot = document.getElementById("serverDot");
+      const state = document.getElementById("serverState");
+      const foot = document.getElementById("footHealth");
+      try {
+        const res = await fetch(`${BASE}/health`, { cache: "no-store" });
+        const data = await res.json();
+        dot.className = "status-dot ok";
+        state.textContent = "Online";
+        foot.textContent = "online";
+        document.getElementById("stHealth").textContent = res.ok ? "OK" : "FAIL";
+        document.getElementById("stTime").textContent = new Date(data.timestamp).toLocaleTimeString();
+        document.getElementById("stUptime").textContent = formatUptime(data.uptime);
+      } catch {
+        dot.className = "status-dot down";
+        state.textContent = "Offline";
+        foot.textContent = "offline";
+        document.getElementById("stHealth").textContent = "—";
+        document.getElementById("stTime").textContent = "—";
+        document.getElementById("stUptime").textContent = "—";
+      }
+    }
+
+    function formatUptime(sec) {
+      if (!sec && sec !== 0) return "–";
+      const d = Math.floor(sec / 86400);
+      const h = Math.floor((sec % 86400) / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const parts = [];
+      if (d) parts.push(`${d}d`);
+      if (h) parts.push(`${h}h`);
+      if (m) parts.push(`${m}m`);
+      return parts.join(" ") || "just started";
+    }
+
+    document.getElementById("year").textContent = new Date().getFullYear();
+    checkHealth();
+    setInterval(checkHealth, 30000);
+  </script>
+</body>
+</html>

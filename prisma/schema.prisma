@@ -1,0 +1,336 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── User ────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  password  String
+  role      Role     @default(USER)
+  avatar    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  contacts   Contact[]
+  messages   Message[]
+  projects   Project[]
+  posts      Post[]
+  services   Service[]
+  testimonials Testimonial[]
+
+  @@map("users")
+}
+
+// ─── Testimonials ───────────────────────────────────────
+
+model Testimonial {
+  id        String   @id @default(cuid())
+  name      String
+  role      String
+  quote     String
+  rating    Int      @default(5)
+  image     String?
+  order     Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User? @relation(fields: [userId], references: [id])
+  userId String?
+
+  @@map("testimonials")
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+// ─── Contact Form Submissions ─────────────────────────────
+
+model Contact {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  type      String   @default("Full stack / web application")
+  message   String
+  status    ContactStatus @default(NEW)
+  createdAt DateTime @default(now())
+
+  user   User? @relation(fields: [userId], references: [id])
+  userId String?
+
+  @@map("contacts")
+}
+
+enum ContactStatus {
+  NEW
+  READ
+  ARCHIVED
+}
+
+// ─── Messages (Chat / Internal) ──────────────────────────
+
+model Message {
+  id        String   @id @default(cuid())
+  content   String
+  sender    String
+  createdAt DateTime @default(now())
+
+  user   User? @relation(fields: [userId], references: [id])
+  userId String?
+
+  @@map("messages")
+}
+
+// ─── Projects ─────────────────────────────────────────────
+
+model Project {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  subtitle    String   @default("")
+  category    String
+  description String
+  role        String   @default("")
+  problem     String   @default("")
+  approach    String   @default("")
+  outcome     String   @default("")
+  year        String   @default("")
+  gradient    String   @default("")
+  demo        String?
+  github      String?
+  image       String?
+  featured    Boolean  @default(false)
+  order       Int      @default(0)
+
+  // JSON arrays
+  highlights  Json     @default("[]")  // string[]
+  quote       Json?                    // { text: string, source: string }
+
+  // SEO fields
+  metaTitle       String?
+  metaDescription String?
+  ogImage         String?
+  keywords        Json?               // string[]
+  canonical       String?
+
+  // GEO fields
+  geoRegion       String?
+  geoPlaceName    String?
+  geoPosition     String?
+  geoCountry      String?
+  areaServed      String?
+  availableLanguages Json?            // string[]
+
+  // Structured Data
+  faqJson         Json?               // { question, answer }[]
+  howToSteps      Json?               // { name, text }[]
+  speakableText   String?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  technologies Tech[]
+  metrics      Metric[]
+  user         User?   @relation(fields: [userId], references: [id])
+  userId       String?
+
+  @@map("projects")
+}
+
+model Tech {
+  id        String  @id @default(cuid())
+  name      String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+
+  @@map("techs")
+}
+
+model Metric {
+  id        String  @id @default(cuid())
+  value     String
+  label     String
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  projectId String
+
+  @@map("metrics")
+}
+
+// ─── Blog Posts ───────────────────────────────────────────
+
+model Post {
+  id        String   @id @default(cuid())
+  slug      String   @unique
+  title     String
+  category  String
+  excerpt   String
+  content   String
+  image     String?
+  readTime  String
+  date      DateTime @default(now())
+  published Boolean  @default(false)
+  order     Int      @default(0)
+
+  // SEO fields
+  metaTitle       String?
+  metaDescription String?
+  ogImage         String?
+  keywords        Json?               // string[]
+  canonical       String?
+
+  // GEO fields
+  geoRegion       String?
+  geoPlaceName    String?
+  geoPosition     String?
+  geoCountry      String?
+  areaServed      String?
+  availableLanguages Json?            // string[]
+
+  // Structured Data
+  faqJson         Json?               // { question, answer }[]
+  howToSteps      Json?               // { name, text }[]
+  speakableText   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tags   Tag[]
+  user   User? @relation(fields: [userId], references: [id])
+  userId String?
+
+  @@map("posts")
+}
+
+model Tag {
+  id    String @id @default(cuid())
+  name  String @unique
+  posts Post[]
+
+  @@map("tags")
+}
+
+// ─── Newsletter Subscribers ───────────────────────────────
+
+model Subscriber {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@map("subscribers")
+}
+
+// ─── Services ────────────────────────────────────────────
+
+model Service {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  icon        String   @default("code")
+  title       String
+  category    String
+  description String
+  overview    String
+  image       String?  
+  order       Int      @default(0)
+  featured    Boolean  @default(false)
+  active      Boolean  @default(true)
+
+  // Content arrays (stored as JSON)
+  deliverables Json     // string[]
+  stack        Json     // string[]
+  bestFor      Json     // string[]
+  features     Json     // string[]
+
+  // SEO fields
+  metaTitle       String?
+  metaDescription String?
+  ogImage         String?
+  keywords        Json?      // string[]
+  canonical       String?
+
+  // GEO fields
+  geoRegion       String?    // e.g. "BD-DH" (Dhaka, Bangladesh)
+  geoPlaceName    String?    // e.g. "Dhaka"
+  geoPosition     String?    // lat;long
+  geoCountry      String?    // "Bangladesh"
+  areaServed      String?    // "Worldwide" or "BD"
+  availableLanguages Json?   // string[] e.g. ["en","bn"]
+
+  // Structured Data
+  faqJson         Json?      // { question: string, answer: string }[]
+  howToSteps      Json?      // { name: string, text: string }[]
+  speakableText   String?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User? @relation(fields: [userId], references: [id])
+  userId String?
+
+  @@map("services")
+}
+
+// ─── Chat Sessions ──────────────────────────────────────
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  name      String
+  email     String
+  phone     String?
+  message   String?     // Initial message
+  status    String   @default("new") // new, contacted, closed
+  
+  // Messages stored as JSON array
+  messages  Json     // { role: "user"|"assistant", content: string }[]
+  
+  // Metadata
+  ip        String?
+  userAgent String?
+  country   String?
+  city      String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("chat_sessions")
+}
+
+// ─── Page Views / Analytics ──────────────────────────────
+
+model PageView {
+  id        String   @id @default(cuid())
+  path      String
+  referrer  String?
+  userAgent String?
+  ip        String?
+
+  // Parsed from user agent
+  browser   String?
+  os        String?
+  device    String?    // "desktop", "mobile", "tablet"
+
+  // Geo from IP
+  country   String?
+  city      String?
+  region    String?
+
+  createdAt DateTime @default(now())
+
+  @@index([path])
+  @@index([createdAt])
+  @@index([country])
+  @@index([browser])
+  @@index([device])
+  @@map("page_views")
+}
