@@ -52,6 +52,16 @@ app.get("/health", (_req, res) => {
 // ─── API Routes ───────────────────────────────────────────
 app.use("/api", routes);
 
+// ─── Root ─────────────────────────────────────────────────
+app.get("/", (_req, res) => {
+  res.json({
+    success: true,
+    message: "RHD Backend API",
+    docs: "/health",
+    api: "/api",
+  });
+});
+
 // ─── Error Handling ───────────────────────────────────────
 app.use(notFoundHandler);
 app.use(errorHandler);
