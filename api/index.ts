@@ -20,9 +20,17 @@ app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (config.corsOrigins.includes(origin) || config.corsOrigins.includes("*")) {
-        return callback(null, true);
-      }
+
+      const normalize = (url: string) =>
+        url.replace(/\/$/, "").replace(/^https?:\/\/(www\.)?/i, "https://");
+
+      const normalizedOrigin = normalize(origin);
+      const allowed = config.corsOrigins.some(
+        (o) => o === "*" || normalize(o) === normalizedOrigin
+      );
+
+      if (allowed) return callback(null, true);
+
       return callback(new Error(`CORS policy: ${origin} not allowed`));
     },
     credentials: true,
