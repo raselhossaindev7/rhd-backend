@@ -9,6 +9,7 @@ import {
   bulkDeleteFiles,
   getUploadUrl,
   proxyImage,
+  debugR2Key,
 } from "../controllers/uploadController";
 import { authenticate } from "../middleware/auth";
 
@@ -18,6 +19,9 @@ const router = Router();
 
 // Proxy image (for CORS - no auth needed)
 router.get("/proxy", proxyImage);
+
+// Debug R2 key lookup (no auth needed)
+router.get("/debug-key", debugR2Key);
 
 // List all files in R2
 router.get("/", authenticate, listFiles);

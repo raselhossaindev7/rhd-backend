@@ -1,7 +1,7 @@
 import { Response } from "express";
 import multer from "multer";
 import sharp from "sharp";
-import { ListObjectsV2Command, GetObjectCommand, _Object } from "@aws-sdk/client-s3";
+import { ListObjectsV2Command, GetObjectCommand, HeadObjectCommand, _Object } from "@aws-sdk/client-s3";
 import { r2Client, uploadToR2, deleteFromR2, generateKey } from "../config/r2";
 import { sendSuccess, sendError, ApiError } from "../utils/helpers";
 import { AuthRequest } from "../types";
@@ -258,36 +258,79 @@ export async function bulkDeleteFiles(req: AuthRequest, res: Response) {
 
 // ─── Image Proxy (for CORS) ──────────────────────────────
 
-export async function proxyImage(req: AuthRequest, res: Response) {
+function extractR2Key(url: string): string {
+  let key: string;
   try {
-    const { url } = req.query;
-    if (!url || typeof url !== "string") {
-      throw new ApiError(400, "url query parameter is required");
-    }
+    const parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
+    key = parsed.pathname.replace(/^\/+/, "");
+  } catch {
+    key = url.replace(/^\/+/, "");
+  }
+  key = decodeURIComponent(key);
+  key = key.replace(/\/+/g, "/").replace(/^\/+/, "");
 
-    // Extract key from public URL
-    let key: string;
+  if (config.r2.publicUrl) {
     try {
-      const parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
-      key = parsed.pathname.replace(/^\/+/, "");
-    } catch {
-      key = url.replace(/^\/+/, "");
-    }
-    key = decodeURIComponent(key);
+      const publicUrlPath = new URL(config.r2.publicUrl).pathname.replace(/^\/+/, "").replace(/\/+$/, "");
+      if (publicUrlPath && key.startsWith(publicUrlPath + "/")) {
+        key = key.substring(publicUrlPath.length + 1);
+      } else if (publicUrlPath && key === publicUrlPath) {
+        key = "";
+      }
+    } catch {}
+  }
 
-    // Normalize: remove double slashes and leading slashes
-    key = key.replace(/\/+/g, "/").replace(/^\/+/, "");
+  return key;
+}
 
-    // If publicUrl has a path prefix, strip it from the key
-    const publicUrlPath = new URL(config.r2.publicUrl).pathname.replace(/^\/+/, "").replace(/\/+$/, "");
-    if (publicUrlPath && key.startsWith(publicUrlPath + "/")) {
-      key = key.substring(publicUrlPath.length + 1);
-    } else if (publicUrlPath && key === publicUrlPath) {
-      key = "";
-    }
+// ─── R2 Debug (check key mismatch) ─────────────────────
 
-    console.log("Proxy image request:", { inputUrl: url, extractedKey: key });
+export async function debugR2Key(req: AuthRequest, res: Response) {
+  const { url } = req.query;
+  if (!url || typeof url !== "string") {
+    return sendError(res, new ApiError(400, "url query parameter is required"));
+  }
 
+  const extractedKey = extractR2Key(url);
+
+  let sampleKeys: string[] = [];
+  try {
+    const command = new ListObjectsV2Command({
+      Bucket: config.r2.bucketName,
+      MaxKeys: 20,
+    });
+    const response = await r2Client.send(command);
+    sampleKeys = (response.Contents || []).map((item) => item.Key || "");
+  } catch {}
+
+  let keyExists = false;
+  try {
+    const head = new HeadObjectCommand({ Bucket: config.r2.bucketName, Key: extractedKey });
+    await r2Client.send(head);
+    keyExists = true;
+  } catch {}
+
+  sendSuccess(res, {
+    inputUrl: url,
+    extractedKey,
+    keyExists,
+    bucket: config.r2.bucketName,
+    publicUrl: config.r2.publicUrl,
+    sampleKeys,
+  });
+}
+
+export async function proxyImage(req: AuthRequest, res: Response) {
+  const { url } = req.query;
+  if (!url || typeof url !== "string") {
+    return sendError(res, new ApiError(400, "url query parameter is required"));
+  }
+
+  const key = extractR2Key(url);
+
+  console.log("Proxy image:", { url, key, bucket: config.r2.bucketName });
+
+  try {
     const command = new GetObjectCommand({
       Bucket: config.r2.bucketName,
       Key: key,
@@ -296,24 +339,34 @@ export async function proxyImage(req: AuthRequest, res: Response) {
     const response = await r2Client.send(command);
 
     if (!response.Body) {
-      throw new ApiError(404, "Image not found");
+      return sendError(res, new ApiError(404, "Image not found"));
     }
 
-    // Set CORS headers
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "GET");
     res.setHeader("Cache-Control", "public, max-age=86400");
 
-    // Forward content type
     if (response.ContentType) {
       res.setHeader("Content-Type", response.ContentType);
     }
 
-    // Stream the image
     const stream = response.Body as any;
     stream.pipe(res);
-  } catch (error) {
-    console.error("Proxy image error:", error);
+  } catch (error: any) {
+    const statusCode = error?.$metadata?.httpStatusCode;
+
+    if (statusCode === 404 || error.Code === "NoSuchKey" || error.name === "NoSuchKey") {
+      console.warn("Proxy 404 — key not in R2, redirecting to original URL:", { key, url });
+      return res.redirect(302, url);
+    }
+
+    console.error("Proxy image error:", {
+      message: error.message,
+      code: error.Code || error.name,
+      statusCode,
+      key,
+      url,
+    });
     sendError(res, error as Error);
   }
 }
