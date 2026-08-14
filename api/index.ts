@@ -11,6 +11,10 @@ import { errorHandler, notFoundHandler } from "../src/middleware/errorHandler";
 
 const app = express();
 
+// Trust the first proxy (Vercel) so express-rate-limit can
+// correctly read X-Forwarded-For.
+app.set("trust proxy", 1);
+
 // ─── Security ─────────────────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },

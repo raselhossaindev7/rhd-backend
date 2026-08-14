@@ -265,14 +265,16 @@ export async function proxyImage(req: AuthRequest, res: Response) {
       throw new ApiError(400, "url query parameter is required");
     }
 
-    // Extract key from public URL
-    const publicUrl = config.r2.publicUrl;
-    let key = url;
-    if (url.startsWith(publicUrl)) {
-      key = url.slice(publicUrl.length + 1);
-    } else if (url.startsWith("/")) {
-      key = url.slice(1);
+    // Extract key from public URL (handles full URLs, scheme-less
+    // URLs, and bare paths)
+    let key: string;
+    try {
+      const parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
+      key = parsed.pathname.replace(/^\/+/, "");
+    } catch {
+      key = url.replace(/^\/+/, "");
     }
+    key = decodeURIComponent(key);
 
     const command = new GetObjectCommand({
       Bucket: config.r2.bucketName,
