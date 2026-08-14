@@ -265,8 +265,7 @@ export async function proxyImage(req: AuthRequest, res: Response) {
       throw new ApiError(400, "url query parameter is required");
     }
 
-    // Extract key from public URL (handles full URLs, scheme-less
-    // URLs, and bare paths)
+    // Extract key from public URL
     let key: string;
     try {
       const parsed = new URL(url.startsWith("http") ? url : `https://${url}`);
@@ -275,6 +274,19 @@ export async function proxyImage(req: AuthRequest, res: Response) {
       key = url.replace(/^\/+/, "");
     }
     key = decodeURIComponent(key);
+
+    // Normalize: remove double slashes and leading slashes
+    key = key.replace(/\/+/g, "/").replace(/^\/+/, "");
+
+    // If publicUrl has a path prefix, strip it from the key
+    const publicUrlPath = new URL(config.r2.publicUrl).pathname.replace(/^\/+/, "").replace(/\/+$/, "");
+    if (publicUrlPath && key.startsWith(publicUrlPath + "/")) {
+      key = key.substring(publicUrlPath.length + 1);
+    } else if (publicUrlPath && key === publicUrlPath) {
+      key = "";
+    }
+
+    console.log("Proxy image request:", { inputUrl: url, extractedKey: key });
 
     const command = new GetObjectCommand({
       Bucket: config.r2.bucketName,
