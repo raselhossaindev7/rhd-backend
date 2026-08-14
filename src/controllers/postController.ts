@@ -62,9 +62,10 @@ export async function getPosts(req: Request, res: Response) {
 
 export async function getPost(req: Request, res: Response) {
   try {
-    const { id, slug } = req.params;
+    const id = req.params.id as string | undefined;
+    const slug = req.params.slug as string | undefined;
 
-    const where = id ? { id } : { slug };
+    const where = id ? { id } : { slug: slug! };
 
     const post = await prisma.post.findUnique({
       where,

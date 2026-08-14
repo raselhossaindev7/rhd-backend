@@ -38,7 +38,7 @@ export async function createChatSession(req: Request, res: Response) {
 
 export async function updateChatSession(req: Request, res: Response) {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { messages } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
@@ -104,7 +104,7 @@ export async function getChatSessions(req: AuthRequest, res: Response) {
 
 export async function getChatSession(req: AuthRequest, res: Response) {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
 
     const session = await prisma.chatSession.findUnique({
       where: { id },
@@ -124,7 +124,7 @@ export async function getChatSession(req: AuthRequest, res: Response) {
 
 export async function updateSessionStatus(req: AuthRequest, res: Response) {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
     const { status } = req.body;
 
     if (!status || !["new", "contacted", "closed"].includes(status)) {
@@ -146,7 +146,7 @@ export async function updateSessionStatus(req: AuthRequest, res: Response) {
 
 export async function deleteChatSession(req: AuthRequest, res: Response) {
   try {
-    const { id } = req.params;
+    const id = req.params.id as string;
 
     await prisma.chatSession.delete({
       where: { id },

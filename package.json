@@ -5,8 +5,9 @@
   "main": "dist/server.js",
   "scripts": {
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "start": "node dist/server.js",
+    "vercel-build": "prisma generate && prisma db push --skip-generate",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:migrate": "prisma migrate dev",
@@ -42,6 +43,7 @@
     "@types/node": "^22.15.3",
     "@types/nodemailer": "^6.4.17",
     "@types/ua-parser-js": "^0.7.39",
+    "@vercel/node": "^3.0.0",
     "prisma": "^6.12.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.3"
