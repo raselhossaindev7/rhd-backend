@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import path from "path";
 import { config } from "./config/env";
+import prisma from "./config/db";
 import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 
@@ -92,7 +93,7 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 // ─── Start Server ─────────────────────────────────────────
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   console.log(`
   ┌─────────────────────────────────────────┐
   │                                         │
@@ -108,5 +109,19 @@ app.listen(config.port, () => {
   └─────────────────────────────────────────┘
   `);
 });
+
+// ─── Graceful Shutdown ────────────────────────────────────
+const shutdown = async (signal: string) => {
+  console.log(`\n${signal} received. Closing DB connections...`);
+  server.close(() => {
+    prisma.$disconnect().then(() => {
+      console.log("DB disconnected. Exiting.");
+      process.exit(0);
+    });
+  });
+};
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
 
 export default app;
