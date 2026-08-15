@@ -9,6 +9,7 @@ import { config } from "./config/env";
 import prisma from "./config/db";
 import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
+import { initializeCronJobs } from "./cron";
 
 const app = express();
 
@@ -118,6 +119,9 @@ const server = app.listen(config.port, () => {
   │                                         │
   └─────────────────────────────────────────┘
   `);
+
+  // Initialize cron jobs after server starts
+  initializeCronJobs();
 });
 
 // ─── Graceful Shutdown ────────────────────────────────────

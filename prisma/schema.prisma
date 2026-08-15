@@ -19,11 +19,11 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  contacts   Contact[]
-  messages   Message[]
-  projects   Project[]
-  posts      Post[]
-  services   Service[]
+  contacts     Contact[]
+  messages     Message[]
+  projects     Project[]
+  posts        Post[]
+  services     Service[]
   testimonials Testimonial[]
 
   @@map("users")
@@ -43,7 +43,7 @@ model Testimonial {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user   User? @relation(fields: [userId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
   @@map("testimonials")
@@ -57,15 +57,15 @@ enum Role {
 // ─── Contact Form Submissions ─────────────────────────────
 
 model Contact {
-  id        String   @id @default(cuid())
+  id        String        @id @default(cuid())
   name      String
   email     String
-  type      String   @default("Full stack / web application")
+  type      String        @default("Full stack / web application")
   message   String
   status    ContactStatus @default(NEW)
-  createdAt DateTime @default(now())
+  createdAt DateTime      @default(now())
 
-  user   User? @relation(fields: [userId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
   @@map("contacts")
@@ -85,7 +85,7 @@ model Message {
   sender    String
   createdAt DateTime @default(now())
 
-  user   User? @relation(fields: [userId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
   @@map("messages")
@@ -94,54 +94,54 @@ model Message {
 // ─── Projects ─────────────────────────────────────────────
 
 model Project {
-  id          String   @id @default(cuid())
-  slug        String   @unique
+  id          String  @id @default(cuid())
+  slug        String  @unique
   title       String
-  subtitle    String   @default("")
+  subtitle    String  @default("")
   category    String
   description String
-  role        String   @default("")
-  problem     String   @default("")
-  approach    String   @default("")
-  outcome     String   @default("")
-  year        String   @default("")
-  gradient    String   @default("")
+  role        String  @default("")
+  problem     String  @default("")
+  approach    String  @default("")
+  outcome     String  @default("")
+  year        String  @default("")
+  gradient    String  @default("")
   demo        String?
   github      String?
   image       String?
-  featured    Boolean  @default(false)
-  order       Int      @default(0)
+  featured    Boolean @default(false)
+  order       Int     @default(0)
 
   // JSON arrays
-  highlights  Json     @default("[]")  // string[]
-  quote       Json?                    // { text: string, source: string }
+  highlights Json  @default("[]") // string[]
+  quote      Json? // { text: string, source: string }
 
   // SEO fields
   metaTitle       String?
   metaDescription String?
   ogImage         String?
-  keywords        Json?               // string[]
+  keywords        Json? // string[]
   canonical       String?
 
   // GEO fields
-  geoRegion       String?
-  geoPlaceName    String?
-  geoPosition     String?
-  geoCountry      String?
-  areaServed      String?
-  availableLanguages Json?            // string[]
+  geoRegion          String?
+  geoPlaceName       String?
+  geoPosition        String?
+  geoCountry         String?
+  areaServed         String?
+  availableLanguages Json? // string[]
 
   // Structured Data
-  faqJson         Json?               // { question, answer }[]
-  howToSteps      Json?               // { name, text }[]
-  speakableText   String?
+  faqJson       Json? // { question, answer }[]
+  howToSteps    Json? // { name, text }[]
+  speakableText String?
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   technologies Tech[]
   metrics      Metric[]
-  user         User?   @relation(fields: [userId], references: [id])
+  user         User?    @relation(fields: [userId], references: [id])
   userId       String?
 
   @@map("projects")
@@ -185,30 +185,67 @@ model Post {
   metaTitle       String?
   metaDescription String?
   ogImage         String?
-  keywords        Json?               // string[]
+  keywords        Json? // string[]
   canonical       String?
 
   // GEO fields
-  geoRegion       String?
-  geoPlaceName    String?
-  geoPosition     String?
-  geoCountry      String?
-  areaServed      String?
-  availableLanguages Json?            // string[]
+  geoRegion          String?
+  geoPlaceName       String?
+  geoPosition        String?
+  geoCountry         String?
+  areaServed         String?
+  availableLanguages Json? // string[]
 
   // Structured Data
-  faqJson         Json?               // { question, answer }[]
-  howToSteps      Json?               // { name, text }[]
-  speakableText   String?
+  faqJson       Json? // { question, answer }[]
+  howToSteps    Json? // { name, text }[]
+  speakableText String?
+
+  // Schedule fields
+  scheduledAt DateTime? // When to publish (for scheduled posts)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tags   Tag[]
-  user   User? @relation(fields: [userId], references: [id])
+  topics Topic[] // Topics that generated this post
+  user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
   @@map("posts")
+}
+
+// ─── AI Blog Scheduler Topics ─────────────────────────────
+
+model Topic {
+  id           String      @id @default(cuid())
+  title        String // AI-generated or manual topic title
+  category     String // Blog category
+  keywords     String[] // Target SEO keywords
+  description  String? // Brief description for AI context
+  status       TopicStatus @default(PENDING)
+  priority     Int         @default(0) // Higher = processed first
+  scheduledFor DateTime? // When to generate post
+  generatedAt  DateTime? // When AI generated content
+  publishedAt  DateTime? // When post went live
+  postId       String?     @unique // Linked post ID after generation
+  post         Post?       @relation(fields: [postId], references: [id])
+  error        String? // Error message if failed
+  attempts     Int         @default(0)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([status])
+  @@index([scheduledFor])
+  @@map("topics")
+}
+
+enum TopicStatus {
+  PENDING // Waiting to be processed
+  GENERATING // AI is creating content
+  COMPLETED // Post created successfully
+  FAILED // Generation failed
+  PUBLISHED // Post is live
 }
 
 model Tag {
@@ -233,49 +270,49 @@ model Subscriber {
 // ─── Services ────────────────────────────────────────────
 
 model Service {
-  id          String   @id @default(cuid())
-  slug        String   @unique
-  icon        String   @default("code")
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  icon        String  @default("code")
   title       String
   category    String
   description String
   overview    String
-  image       String?  
-  order       Int      @default(0)
-  featured    Boolean  @default(false)
-  active      Boolean  @default(true)
+  image       String?
+  order       Int     @default(0)
+  featured    Boolean @default(false)
+  active      Boolean @default(true)
 
   // Content arrays (stored as JSON)
-  deliverables Json     // string[]
-  stack        Json     // string[]
-  bestFor      Json     // string[]
-  features     Json     // string[]
+  deliverables Json // string[]
+  stack        Json // string[]
+  bestFor      Json // string[]
+  features     Json // string[]
 
   // SEO fields
   metaTitle       String?
   metaDescription String?
   ogImage         String?
-  keywords        Json?      // string[]
+  keywords        Json? // string[]
   canonical       String?
 
   // GEO fields
-  geoRegion       String?    // e.g. "BD-DH" (Dhaka, Bangladesh)
-  geoPlaceName    String?    // e.g. "Dhaka"
-  geoPosition     String?    // lat;long
-  geoCountry      String?    // "Bangladesh"
-  areaServed      String?    // "Worldwide" or "BD"
-  availableLanguages Json?   // string[] e.g. ["en","bn"]
+  geoRegion          String? // e.g. "BD-DH" (Dhaka, Bangladesh)
+  geoPlaceName       String? // e.g. "Dhaka"
+  geoPosition        String? // lat;long
+  geoCountry         String? // "Bangladesh"
+  areaServed         String? // "Worldwide" or "BD"
+  availableLanguages Json? // string[] e.g. ["en","bn"]
 
   // Structured Data
-  faqJson         Json?      // { question: string, answer: string }[]
-  howToSteps      Json?      // { name: string, text: string }[]
-  speakableText   String?
+  faqJson       Json? // { question: string, answer: string }[]
+  howToSteps    Json? // { name: string, text: string }[]
+  speakableText String?
 
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user   User? @relation(fields: [userId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
   @@map("services")
@@ -284,22 +321,22 @@ model Service {
 // ─── Chat Sessions ──────────────────────────────────────
 
 model ChatSession {
-  id        String   @id @default(cuid())
-  name      String
-  email     String
-  phone     String?
-  message   String?     // Initial message
-  status    String   @default("new") // new, contacted, closed
-  
+  id      String  @id @default(cuid())
+  name    String
+  email   String
+  phone   String?
+  message String? // Initial message
+  status  String  @default("new") // new, contacted, closed
+
   // Messages stored as JSON array
-  messages  Json     // { role: "user"|"assistant", content: string }[]
-  
+  messages Json // { role: "user"|"assistant", content: string }[]
+
   // Metadata
   ip        String?
   userAgent String?
   country   String?
   city      String?
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -309,21 +346,21 @@ model ChatSession {
 // ─── Page Views / Analytics ──────────────────────────────
 
 model PageView {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   path      String
   referrer  String?
   userAgent String?
   ip        String?
 
   // Parsed from user agent
-  browser   String?
-  os        String?
-  device    String?    // "desktop", "mobile", "tablet"
+  browser String?
+  os      String?
+  device  String? // "desktop", "mobile", "tablet"
 
   // Geo from IP
-  country   String?
-  city      String?
-  region    String?
+  country String?
+  city    String?
+  region  String?
 
   createdAt DateTime @default(now())
 

@@ -13,6 +13,7 @@ import chatRoutes from "./chatRoutes";
 import chatSessionRoutes from "./chatSessionRoutes";
 import dashboardRoutes from "./dashboardRoutes";
 import settingsRoutes from "./settingsRoutes";
+import scheduleRoutes from "./scheduleRoutes";
 
 const router = Router();
 
@@ -30,6 +31,7 @@ router.use("/chat", chatRoutes);
 router.use("/chat-sessions", chatSessionRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/settings", settingsRoutes);
+router.use("/schedule", scheduleRoutes);
 
 // Health check
 router.get("/health", (_req, res) => {
