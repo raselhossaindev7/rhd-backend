@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../config/db";
 import { ApiError, sendSuccess, sendError } from "../utils/helpers";
 import { sendContactEmail } from "./emailController";
+import { logContactFormEmail } from "../services/emailLogService";
 
 export async function submitContact(req: Request, res: Response) {
   try {
@@ -10,6 +11,9 @@ export async function submitContact(req: Request, res: Response) {
     const contact = await prisma.contact.create({
       data: { name, email, type, message },
     });
+
+    // Log to inbox
+    await logContactFormEmail({ name, email, type, message });
 
     // Send email notifications
     await sendContactEmail({ name, email, type, message });

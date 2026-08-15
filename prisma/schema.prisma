@@ -371,3 +371,45 @@ model PageView {
   @@index([device])
   @@map("page_views")
 }
+
+// ─── Email Logs ─────────────────────────────────────────
+
+model EmailLog {
+  id          String      @id @default(cuid())
+  from        String      // Sender email
+  to          String      // Recipient email
+  subject     String      // Email subject
+  html        String      // Email HTML content
+  text        String?     // Plain text version
+  type        EmailType   // Email type
+  status      EmailStatus @default(SENT)
+  templateId  String?     // Template ID if used
+  metadata    Json?       // Additional data (variables, etc.)
+  error       String?     // Error message if failed
+  sentAt      DateTime    @default(now())
+  readAt      DateTime?   // When recipient opened (if tracked)
+  createdAt   DateTime    @default(now())
+
+  @@index([to])
+  @@index([from])
+  @@index([type])
+  @@index([status])
+  @@index([sentAt])
+  @@map("email_logs")
+}
+
+enum EmailType {
+  INBOUND      // Received emails (contact form, etc.)
+  OUTBOUND     // Sent emails (cold outreach, etc.)
+  SYSTEM       // System emails (welcome, notifications)
+  BULK         // Bulk/newsletter emails
+}
+
+enum EmailStatus {
+  PENDING      // Queued for sending
+  SENT         // Successfully sent
+  FAILED       // Failed to send
+  READ         // Opened by recipient
+  ARCHIVED     // Moved to archive
+  TRASH        // Moved to trash
+}

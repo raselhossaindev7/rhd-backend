@@ -14,6 +14,7 @@ import chatSessionRoutes from "./chatSessionRoutes";
 import dashboardRoutes from "./dashboardRoutes";
 import settingsRoutes from "./settingsRoutes";
 import scheduleRoutes from "./scheduleRoutes";
+import inboxRoutes from "./inboxRoutes";
 
 const router = Router();
 
@@ -32,6 +33,7 @@ router.use("/chat-sessions", chatSessionRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/settings", settingsRoutes);
 router.use("/schedule", scheduleRoutes);
+router.use("/inbox", inboxRoutes);
 
 // Health check
 router.get("/health", (_req, res) => {
