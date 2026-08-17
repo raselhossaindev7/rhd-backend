@@ -1,0 +1,16 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+*.log
+npm-debug.log*
+Dockerfile
+.dockerignore
+docker-compose.yml
+README.md
+.vercelignore
+vercel.json
+render.yaml
