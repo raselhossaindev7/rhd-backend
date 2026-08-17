@@ -182,7 +182,7 @@ export async function generatePost(req: Request, res: Response) {
       // Create the post
       const post = await prisma.post.create({
         data: {
-          slug: postData.slug,
+          slug: await uniquePostSlug(postData.slug),
           title: postData.title,
           category: postData.category,
           excerpt: postData.excerpt,
@@ -339,6 +339,20 @@ export async function runScheduledGeneration() {
   }
 }
 
+async function uniquePostSlug(base: string): Promise<string> {
+  let slug = slugify(base);
+  let existing = await prisma.post.findUnique({ where: { slug } });
+  if (!existing) return slug;
+
+  let i = 2;
+  while (existing) {
+    slug = `${slugify(base)}-${i}`;
+    existing = await prisma.post.findUnique({ where: { slug } });
+    i++;
+  }
+  return slug;
+}
+
 async function processTopic(topicId: string) {
   const topic = await prisma.topic.findUnique({ where: { id: topicId } });
   if (!topic) return null;
@@ -359,7 +373,7 @@ async function processTopic(topicId: string) {
 
     const post = await prisma.post.create({
       data: {
-        slug: postData.slug,
+        slug: await uniquePostSlug(postData.slug),
         title: postData.title,
         category: postData.category,
         excerpt: postData.excerpt,

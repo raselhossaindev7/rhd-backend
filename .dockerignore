@@ -11,6 +11,4 @@ Dockerfile
 .dockerignore
 docker-compose.yml
 README.md
-.vercelignore
-vercel.json
 render.yaml
