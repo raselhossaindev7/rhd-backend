@@ -18,43 +18,9 @@ services:
 
     networks:
       - rhd-network
-
-  nginx:
-    image: nginx:alpine
-    container_name: rhd-nginx
-
-    restart: unless-stopped
-
-    ports:
-      - "8088:80"
-      - "9443:443"
-
-    volumes:
-      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
-      - certbot-data:/etc/letsencrypt
-      - certbot-www:/var/www/certbot
-
-    depends_on:
-      - backend
-
-    networks:
-      - rhd-network
-
-  certbot:
-    image: certbot/certbot
-    container_name: rhd-certbot
-
-    volumes:
-      - certbot-data:/etc/letsencrypt
-      - certbot-www:/var/www/certbot
-
-    networks:
-      - rhd-network
+      - abs_app-network
 
 networks:
   rhd-network:
-
-volumes:
-  certbot-data:
-  certbot-www:
+  abs_app-network:
+    external: true
