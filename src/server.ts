@@ -13,9 +13,10 @@ import { initializeCronJobs } from "./cron";
 
 const app = express();
 
-// Trust the first proxy (Render load balancer) so
+// Trust proxy chain (Cloudflare + Render) so
 // express-rate-limit can correctly read X-Forwarded-For.
-app.set("trust proxy", 1);
+// Using `true` trusts all hops and correctly resolves client IP.
+app.set("trust proxy", true);
 
 // ─── Security ─────────────────────────────────────────────
 app.use(helmet({
@@ -53,18 +54,36 @@ const isLocalhost = (ip: string | undefined) =>
 const limiter = rateLimit({
   windowMs: config.rateLimitWindowMs,
   max: config.rateLimitMax,
-  message: { success: false, message: "Too many requests, try again later" },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => config.isDev && isLocalhost(req.ip),
+  // Use X-Forwarded-For aware IP (requires trust proxy = true)
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
+  handler: (_req, res) => {
+    res.status(429).json({
+      success: false,
+      message: "Too many requests, try again later",
+    });
+  },
+  skip: (req) => {
+    // Skip health checks and localhost in dev
+    if (req.path === "/health" || req.path === "/api/health") return true;
+    if (config.isDev && isLocalhost(req.ip)) return true;
+    return false;
+  },
 });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // 10 attempts
-  message: { success: false, message: "Too many auth attempts, try again in 15 minutes" },
+  max: 20, // 20 attempts per 15 min — protects brute force but allows typos
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
+  handler: (_req, res) => {
+    res.status(429).json({
+      success: false,
+      message: "Too many auth attempts, try again in 15 minutes",
+    });
+  },
 });
 
 app.use("/api/", limiter);
