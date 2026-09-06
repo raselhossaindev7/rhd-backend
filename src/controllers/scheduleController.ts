@@ -12,6 +12,58 @@ import { TopicStatus } from "@prisma/client";
 // 429 the key AND pile more load on the DB pool. One at a time, globally.
 let generationInFlight = false;
 
+// ─── Live generation progress (polled by admin progress bar) ──
+// In-memory by design: reset on restart, and the 15-min sweeper reclaims
+// any topic left GENERATING by a dead process.
+export type GenerationStage = "preparing" | "writing" | "meta" | "publishing";
+
+interface GenerationProgressState {
+  active: boolean;
+  topicId: string | null;
+  topicTitle: string | null;
+  stage: GenerationStage | null;
+  startedAt: number | null;
+  lastStatus: "published" | "failed" | null;
+  lastTopicTitle: string | null;
+  lastError: string | null;
+  finishedAt: number | null;
+}
+
+const generationProgress: GenerationProgressState = {
+  active: false,
+  topicId: null,
+  topicTitle: null,
+  stage: null,
+  startedAt: null,
+  lastStatus: null,
+  lastTopicTitle: null,
+  lastError: null,
+  finishedAt: null,
+};
+
+const STAGE_LABELS: Record<GenerationStage, string> = {
+  preparing: "Finding tech images",
+  writing: "AI writing article",
+  meta: "SEO meta + FAQ",
+  publishing: "Publishing post",
+};
+
+function setProgress(patch: Partial<GenerationProgressState>): void {
+  Object.assign(generationProgress, patch);
+}
+
+export function getGenerationStatus() {
+  const elapsedSec =
+    generationProgress.active && generationProgress.startedAt
+      ? Math.floor((Date.now() - generationProgress.startedAt) / 1000)
+      : null;
+  return {
+    ...generationProgress,
+    stageLabel: generationProgress.stage ? STAGE_LABELS[generationProgress.stage] : null,
+    elapsedSec,
+  };
+}
+
 // ─── Topic CRUD ──────────────────────────────────────────
 
 export async function getTopics(req: Request, res: Response) {
@@ -186,6 +238,11 @@ export async function generatePost(req: Request, res: Response) {
 
     generationInFlight = true;
     const target = { id: topic.id, title: topic.title, category: topic.category, keywords: topic.keywords, description: topic.description };
+    setProgress({
+      active: true, topicId: target.id, topicTitle: target.title,
+      stage: "preparing", startedAt: Date.now(),
+      lastStatus: null, lastTopicTitle: null, lastError: null, finishedAt: null,
+    });
 
     // Detached: must never throw back into Express (response already sent).
     setImmediate(() => {
@@ -195,13 +252,18 @@ export async function generatePost(req: Request, res: Response) {
             target.title,
             target.category,
             target.keywords,
-            target.description || undefined
+            target.description || undefined,
+            (stage) => setProgress({ stage })
           );
+          setProgress({ stage: "publishing" });
           const post = await persistGeneratedPost(target.id, postData);
           console.log(`[SCHEDULE] Manual generation complete: ${post.title}`);
+          setProgress({ active: false, stage: null, lastStatus: "published", lastTopicTitle: post.title, finishedAt: Date.now() });
         } catch (genError) {
           console.error(`[SCHEDULE] Manual generation failed for: ${target.title}`, genError);
           await markTopicFailed(target.id, genError);
+          const msg = genError instanceof Error ? genError.message : "Unknown error";
+          setProgress({ active: false, stage: null, lastStatus: "failed", lastTopicTitle: target.title, lastError: msg, finishedAt: Date.now() });
         } finally {
           generationInFlight = false;
         }
@@ -505,21 +567,32 @@ async function processTopic(topicId: string) {
     data: { status: "GENERATING", attempts: { increment: 1 } },
   });
 
+  setProgress({
+    active: true, topicId: topic.id, topicTitle: topic.title,
+    stage: "preparing", startedAt: Date.now(),
+    lastStatus: null, lastTopicTitle: null, lastError: null, finishedAt: null,
+  });
+
   try {
     const postData = await generateBlogPost(
       topic.title,
       topic.category,
       topic.keywords,
-      topic.description || undefined
+      topic.description || undefined,
+      (stage) => setProgress({ stage })
     );
 
+    setProgress({ stage: "publishing" });
     const post = await persistGeneratedPost(topic.id, postData);
 
     console.log(`[CRON] Successfully generated post: ${post.title}`);
+    setProgress({ active: false, stage: null, lastStatus: "published", lastTopicTitle: post.title, finishedAt: Date.now() });
     return post;
   } catch (error) {
     console.error(`[CRON] Failed to generate post for topic: ${topic.title}`, error);
     await markTopicFailed(topic.id, error);
+    const msg = error instanceof Error ? error.message : "Unknown error";
+    setProgress({ active: false, stage: null, lastStatus: "failed", lastTopicTitle: topic.title, lastError: msg, finishedAt: Date.now() });
     return null;
   }
 }

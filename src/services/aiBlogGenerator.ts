@@ -100,11 +100,14 @@ function stripCodeFences(raw: string): string {
   return (m ? m[1] : trimmed).trim();
 }
 
+export type BlogGenStage = "writing" | "meta";
+
 export async function generateBlogPost(
   title: string,
   category: string,
   keywords: string[] = [],
-  description?: string
+  description?: string,
+  onStage?: (stage: BlogGenStage) => void
 ): Promise<BlogPostData> {
   const imageKeywords = extractKeywords(title, category);
   const images = await findImages(imageKeywords, 3, category);
@@ -138,6 +141,7 @@ Return ONLY the Markdown article. No JSON, no code fences around it.`;
   const MIN_CONTENT_CHARS = 1500;
   let article = "";
   let lastRaw = "";
+  onStage?.("writing");
   for (let attempt = 1; attempt <= 2; attempt++) {
     const res = await aiChatFull(
       attempt === 1
@@ -201,6 +205,7 @@ Return ONLY the Markdown article. No JSON, no code fences around it.`;
 Article opening for context:
 ${article.slice(0, 800)}`;
 
+  onStage?.("meta");
   let parsed: any = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     const res = await aiChatFull(
