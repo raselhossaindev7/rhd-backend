@@ -8,6 +8,7 @@ import {
   deleteService,
 } from "../controllers/serviceController";
 import { authenticate, authorize } from "../middleware/auth";
+import { cache } from "../middleware/cache";
 import { validate } from "../middleware/validate";
 import { z } from "zod";
 
@@ -73,9 +74,9 @@ const serviceSchema = z.object({
   speakableText: z.string().optional().nullable(),
 });
 
-// Public
-router.get("/", getServices);
-router.get("/slug/:slug", getServiceBySlug);
+// Public (cached 60s — invalidated on create/update/delete)
+router.get("/", cache(60), getServices);
+router.get("/slug/:slug", cache(60), getServiceBySlug);
 
 // Protected (admin)
 router.get("/:id", authenticate, authorize(["ADMIN"]), getService);

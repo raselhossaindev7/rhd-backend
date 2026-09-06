@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
+import { clearCache } from "../middleware/cache";
 import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
 
 function shapePost(p: any) {
@@ -31,8 +32,9 @@ export async function getPosts(req: Request, res: Response) {
     const category = req.query.category as string | undefined;
     const tag = req.query.tag as string | undefined;
     const published = req.query.published as string | undefined;
-    const page = parseInt((req.query.page as string) || "1", 10);
-    const limit = parseInt((req.query.limit as string) || "20", 10);
+    const page = Math.max(parseInt((req.query.page as string) || "1", 10) || 1, 1);
+    // Cap page size so a single request can never dump the whole table
+    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || "20", 10) || 20, 1), 50);
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -118,6 +120,7 @@ export async function createPost(req: Request, res: Response) {
       include: { tags: true },
     });
 
+    clearCache();
     sendSuccess(res, shapePost(post), 201);
   } catch (error) {
     sendError(res, error as Error);
@@ -179,6 +182,7 @@ export async function updatePost(req: Request, res: Response) {
       include: { tags: true },
     });
 
+    clearCache();
     sendSuccess(res, shapePost(post));
   } catch (error) {
     sendError(res, error as Error);
@@ -191,6 +195,7 @@ export async function deletePost(req: Request, res: Response) {
 
     await prisma.post.delete({ where: { id } });
 
+    clearCache();
     sendSuccess(res, { message: "Post deleted" });
   } catch (error) {
     sendError(res, error as Error);

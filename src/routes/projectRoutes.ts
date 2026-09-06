@@ -7,6 +7,7 @@ import {
   deleteProject,
 } from "../controllers/projectController";
 import { authenticate, authorize } from "../middleware/auth";
+import { cache } from "../middleware/cache";
 
 const router = Router();
 
@@ -20,9 +21,9 @@ const jsonArrOrEmpty = {
   },
 };
 
-// Public
-router.get("/", getProjects);
-router.get("/slug/:slug", getProject);
+// Public (cached 60s — invalidated on create/update/delete)
+router.get("/", cache(60), getProjects);
+router.get("/slug/:slug", cache(60), getProject);
 
 // Protected (admin)
 router.get("/:id", authenticate, authorize(["ADMIN"]), getProject);

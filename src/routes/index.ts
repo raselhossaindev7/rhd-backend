@@ -16,6 +16,8 @@ import settingsRoutes from "./settingsRoutes";
 import scheduleRoutes from "./scheduleRoutes";
 import inboxRoutes from "./inboxRoutes";
 
+import prisma from "../config/db";
+
 const router = Router();
 
 router.use("/auth", authRoutes);
@@ -36,9 +38,18 @@ router.use("/schedule", scheduleRoutes);
 router.use("/inbox", inboxRoutes);
 
 // Health check
-router.get("/health", (_req, res) => {
+router.get("/health", async (_req, res) => {
+  let dbStatus: "connected" | "disconnected" = "disconnected";
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbStatus = "connected";
+  } catch {
+    dbStatus = "disconnected";
+  }
+
   res.json({
     status: "ok",
+    database: dbStatus,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });

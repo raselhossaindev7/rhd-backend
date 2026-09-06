@@ -36,33 +36,42 @@ async function geolocateIp(ip: string | null) {
 }
 
 export async function trackPageView(req: Request, res: Response) {
-  try {
-    const { path, ip: clientIp, referrer: clientReferrer } = req.body;
-    const referrer = clientReferrer || req.headers.referer || null;
-    const userAgent = req.headers["user-agent"] || null;
-    // Prefer client-provided IP, fallback to x-forwarded-for, then req.ip
-    const forwarded = req.headers["x-forwarded-for"];
-    const fallbackIp = (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : null) || req.ip || null;
-    const ip = clientIp || fallbackIp;
+  const { path, ip: clientIp, referrer: clientReferrer } = req.body;
 
-    const uaData = parseUserAgent(userAgent);
-    const geo = await geolocateIp(ip);
-
-    await prisma.pageView.create({
-      data: {
-        path,
-        referrer,
-        userAgent,
-        ip,
-        ...uaData,
-        ...geo,
-      },
-    });
-
-    sendSuccess(res, { tracked: true }, 201);
-  } catch (error) {
-    sendError(res, error as Error);
+  if (!path) {
+    return sendError(res, new Error("Path is required"));
   }
+
+  // Respond immediately so tracking never blocks the client.
+  // The external geo lookup (up to 2s) and DB insert run in background.
+  sendSuccess(res, { tracked: true }, 201);
+
+  void (async () => {
+    try {
+      const referrer = clientReferrer || req.headers.referer || null;
+      const userAgent = req.headers["user-agent"] || null;
+      // Prefer client-provided IP, fallback to x-forwarded-for, then req.ip
+      const forwarded = req.headers["x-forwarded-for"];
+      const fallbackIp = (typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : null) || req.ip || null;
+      const ip = clientIp || fallbackIp;
+
+      const uaData = parseUserAgent(userAgent);
+      const geo = await geolocateIp(ip);
+
+      await prisma.pageView.create({
+        data: {
+          path,
+          referrer,
+          userAgent,
+          ip,
+          ...uaData,
+          ...geo,
+        },
+      });
+    } catch (err) {
+      console.error("[Analytics] Background page-view insert failed:", err);
+    }
+  })();
 }
 
 export async function getAnalytics(req: Request, res: Response) {
@@ -87,17 +96,17 @@ export async function getAnalytics(req: Request, res: Response) {
     ] = await Promise.all([
       prisma.pageView.count({ where: { createdAt: { gte: since } } }),
 
-      prisma.pageView.findMany({
-        where: { createdAt: { gte: since } },
-        select: { ip: true },
-        distinct: ["ip"],
-      }).then((rows) => rows.length),
+      // COUNT(DISTINCT ...) in SQL instead of fetching all rows into Node.
+      // The old version loaded every matching row and counted in JS.
+      prisma.$queryRaw<{ count: number }[]>`
+        SELECT COUNT(DISTINCT ip)::int AS count FROM page_views
+        WHERE "createdAt" >= ${since} AND ip IS NOT NULL
+      `.then((rows) => rows[0]?.count ?? 0),
 
-      prisma.pageView.findMany({
-        where: { createdAt: { gte: since } },
-        select: { path: true },
-        distinct: ["path"],
-      }).then((rows) => rows.length),
+      prisma.$queryRaw<{ count: number }[]>`
+        SELECT COUNT(DISTINCT path)::int AS count FROM page_views
+        WHERE "createdAt" >= ${since}
+      `.then((rows) => rows[0]?.count ?? 0),
 
       prisma.pageView.groupBy({
         by: ["path"],

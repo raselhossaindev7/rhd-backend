@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import prisma from "../config/db";
+import { clearCache } from "../middleware/cache";
 
 // GET /api/services — public, returns all active services
 export const getServices = async (req: Request, res: Response) => {
@@ -18,7 +17,8 @@ export const getServices = async (req: Request, res: Response) => {
     else if (sort === "createdAt") orderBy.createdAt = order === "asc" ? "asc" : "desc";
     else orderBy.order = "asc";
 
-    const take = limit ? parseInt(limit as string) : undefined;
+    // Cap page size so a single request can never dump the whole table
+    const take = Math.min(limit ? parseInt(limit as string) || 50 : 50, 100);
 
     const [services, total] = await Promise.all([
       prisma.service.findMany({ where, orderBy, take }),
@@ -113,6 +113,7 @@ export const createService = async (req: Request, res: Response) => {
       },
     });
 
+    clearCache();
     res.status(201).json({ success: true, data: shapeService(service) });
   } catch (error) {
     console.error("Create service error:", error);
@@ -172,6 +173,7 @@ export const updateService = async (req: Request, res: Response) => {
       },
     });
 
+    clearCache();
     res.json({ success: true, data: shapeService(service) });
   } catch (error) {
     console.error("Update service error:", error);
@@ -190,6 +192,7 @@ export const deleteService = async (req: Request, res: Response) => {
     }
 
     await prisma.service.delete({ where: { id: id as string } });
+    clearCache();
     res.json({ success: true, message: "Service deleted" });
   } catch (error) {
     console.error("Delete service error:", error);

@@ -6,7 +6,7 @@ import cookieParser from "cookie-parser";
 import rateLimit from "express-rate-limit";
 import path from "path";
 import { config } from "./config/env";
-import prisma from "./config/db";
+import prisma, { connectDatabase } from "./config/db";
 import routes from "./routes";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { initializeCronJobs } from "./cron";
@@ -99,12 +99,21 @@ app.use(cookieParser());
 // ─── Compression ──────────────────────────────────────────
 app.use(compression());
 
-// ─── Health Check ─────────────────────────────────────────
-app.get("/health", (_req, res) => {
+// ─── Health Check (with DB status) ──────────────────────────
+app.get("/health", async (_req, res) => {
+  let dbStatus: "connected" | "disconnected" = "disconnected";
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbStatus = "connected";
+  } catch {
+    dbStatus = "disconnected";
+  }
+
   res.json({
     success: true,
     message: "Server is running",
     environment: config.nodeEnv,
+    database: dbStatus,
     timestamp: new Date().toISOString(),
   });
 });
@@ -122,22 +131,30 @@ app.get("/", (_req, res) => {
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-// ─── Start Server ─────────────────────────────────────────
-const server = app.listen(config.port, () => {
+// ─── Start Server (with DB connect check) ───────────────────
+const server = app.listen(config.port, async () => {
+  // Shows in console whether the database is connected
+  const dbConnected = await connectDatabase();
+
   console.log(`
   ┌─────────────────────────────────────────┐
   │                                         │
-  │   🚀 RHD Backend Server                │
+  │   RHD Backend Server                  │
   │                                         │
   │   Port:       ${config.port}                      │
   │   Environment: ${config.nodeEnv.padEnd(24)}│
   │   CORS:       ${config.corsOrigins[0].padEnd(24)}│
+  │   Database:   ${(dbConnected ? "Connected" : "FAILED").padEnd(24)}│
   │                                         │
   │   API:        http://localhost:${config.port}/api │
   │   Health:     http://localhost:${config.port}/health│
   │                                         │
   └─────────────────────────────────────────┘
   `);
+
+  if (!dbConnected) {
+    console.error("WARNING: Server is running BUT database is NOT connected. Check DATABASE_URL in .env.");
+  }
 
   // Initialize cron jobs after server starts
   initializeCronJobs();

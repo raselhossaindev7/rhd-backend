@@ -1,7 +1,6 @@
 import { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
-
-const prisma = new PrismaClient();
+import prisma from "../config/db";
+import { clearCache } from "../middleware/cache";
 
 // GET /api/testimonials — public, returns all active testimonials
 export const getTestimonials = async (req: Request, res: Response) => {
@@ -10,7 +9,8 @@ export const getTestimonials = async (req: Request, res: Response) => {
 
     const where = { active: true };
     const orderBy = { order: "asc" as const };
-    const take = limit ? parseInt(limit as string) : undefined;
+    // Cap page size so a single request can never dump the whole table
+    const take = Math.min(limit ? parseInt(limit as string) || 50 : 50, 100);
 
     const [testimonials, total] = await Promise.all([
       prisma.testimonial.findMany({ where, orderBy, take }),
@@ -59,6 +59,7 @@ export const createTestimonial = async (req: Request, res: Response) => {
       },
     });
 
+    clearCache();
     res.status(201).json({ success: true, data: testimonial });
   } catch (error) {
     console.error("Create testimonial error:", error);
@@ -90,6 +91,7 @@ export const updateTestimonial = async (req: Request, res: Response) => {
       },
     });
 
+    clearCache();
     res.json({ success: true, data: testimonial });
   } catch (error) {
     console.error("Update testimonial error:", error);
@@ -108,6 +110,7 @@ export const deleteTestimonial = async (req: Request, res: Response) => {
     }
 
     await prisma.testimonial.delete({ where: { id: id as string } });
+    clearCache();
     res.json({ success: true, message: "Testimonial deleted" });
   } catch (error) {
     console.error("Delete testimonial error:", error);

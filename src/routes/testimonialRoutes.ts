@@ -7,6 +7,7 @@ import {
   deleteTestimonial,
 } from "../controllers/testimonialController";
 import { authenticate, authorize } from "../middleware/auth";
+import { cache } from "../middleware/cache";
 import { validate } from "../middleware/validate";
 import { z } from "zod";
 
@@ -22,8 +23,8 @@ const testimonialSchema = z.object({
   active: z.coerce.boolean().default(true),
 });
 
-// Public
-router.get("/", getTestimonials);
+// Public (cached 60s — invalidated on create/update/delete)
+router.get("/", cache(60), getTestimonials);
 
 // Protected (admin)
 router.get("/:id", authenticate, authorize(["ADMIN"]), getTestimonial);

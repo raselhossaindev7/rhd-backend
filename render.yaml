@@ -2,7 +2,7 @@ services:
   - type: web
     name: rhd-backend
     runtime: node
-    buildCommand: npm run build
+    buildCommand: npx prisma migrate deploy && npm run build
     startCommand: node dist/server.js
     envVars:
       - key: NODE_ENV

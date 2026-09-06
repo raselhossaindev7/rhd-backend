@@ -46,6 +46,8 @@ model Testimonial {
   user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
+  @@index([active])
+  @@index([order])
   @@map("testimonials")
 }
 
@@ -68,6 +70,8 @@ model Contact {
   user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
+  @@index([status])
+  @@index([createdAt])
   @@map("contacts")
 }
 
@@ -144,6 +148,9 @@ model Project {
   user         User?    @relation(fields: [userId], references: [id])
   userId       String?
 
+  @@index([featured])
+  @@index([category])
+  @@index([order])
   @@map("projects")
 }
 
@@ -212,6 +219,9 @@ model Post {
   user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
+  @@index([published])
+  @@index([category])
+  @@index([date])
   @@map("posts")
 }
 
@@ -264,6 +274,7 @@ model Subscriber {
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
 
+  @@index([active])
   @@map("subscribers")
 }
 
@@ -315,6 +326,9 @@ model Service {
   user   User?   @relation(fields: [userId], references: [id])
   userId String?
 
+  @@index([active])
+  @@index([featured])
+  @@index([order])
   @@map("services")
 }
 
@@ -340,6 +354,8 @@ model ChatSession {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@index([status])
+  @@index([createdAt])
   @@map("chat_sessions")
 }
 

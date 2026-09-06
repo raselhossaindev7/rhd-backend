@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
+import { clearCache } from "../middleware/cache";
 import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
 
 // Shape project for API response — parse JSON fields
@@ -35,8 +36,9 @@ export async function getProjects(req: Request, res: Response) {
   try {
     const category = req.query.category as string | undefined;
     const featured = req.query.featured as string | undefined;
-    const page = parseInt((req.query.page as string) || "1", 10);
-    const limit = parseInt((req.query.limit as string) || "20", 10);
+    const page = Math.max(parseInt((req.query.page as string) || "1", 10) || 1, 1);
+    // Cap page size so a single request can never dump the whole table
+    const limit = Math.min(Math.max(parseInt((req.query.limit as string) || "20", 10) || 20, 1), 50);
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -140,6 +142,7 @@ export async function createProject(req: Request, res: Response) {
       include: { technologies: true, metrics: true },
     });
 
+    clearCache();
     sendSuccess(res, shapeProject(project), 201);
   } catch (error) {
     console.error("[CREATE PROJECT ERROR]", error);
@@ -216,6 +219,7 @@ export async function updateProject(req: Request, res: Response) {
       include: { technologies: true, metrics: true },
     });
 
+    clearCache();
     sendSuccess(res, shapeProject(project));
   } catch (error) {
     sendError(res, error as Error);
@@ -228,6 +232,7 @@ export async function deleteProject(req: Request, res: Response) {
 
     await prisma.project.delete({ where: { id } });
 
+    clearCache();
     sendSuccess(res, { message: "Project deleted" });
   } catch (error) {
     sendError(res, error as Error);
