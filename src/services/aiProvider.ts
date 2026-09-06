@@ -241,7 +241,13 @@ function parseRetryAfterSeconds(body: string, fallbackSeconds: number): number {
   return fallbackSeconds;
 }
 
-async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOptions = {}): Promise<string> {
+export interface AiChatResult {
+  content: string;
+  /** Provider stop reason: "stop" = complete, "length" = cut off by max tokens */
+  finishReason?: string;
+}
+
+async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOptions = {}): Promise<AiChatResult> {
   const base = (cfg.baseUrl || AI_PROVIDER_DEFAULTS.ollama.baseUrl).replace(/\/$/, "");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
@@ -265,14 +271,14 @@ async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOpti
   const data: any = await res.json();
   const content = data.message?.content || "";
   if (!content) throw new Error("Empty AI response");
-  return content;
+  return { content, finishReason: data.done_reason };
 }
 
 async function openAiCompatibleChat(
   cfg: AiConfig,
   messages: AiMessage[],
   opts: AiChatOptions = {}
-): Promise<string> {
+): Promise<AiChatResult> {
   const base = (cfg.baseUrl || AI_PROVIDER_DEFAULTS[cfg.provider].baseUrl).replace(/\/$/, "");
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -308,7 +314,7 @@ async function openAiCompatibleChat(
       const data: any = await res.json();
       const content = data.choices?.[0]?.message?.content || "";
       if (!content) throw new Error("Empty AI response");
-      return content;
+      return { content, finishReason: data.choices?.[0]?.finish_reason };
     }
     const err = await res.text();
     if (res.status === 429 && attempt < 4) {
@@ -337,16 +343,31 @@ async function openAiCompatibleChat(
   throw new Error(`AI ${cfg.provider} error: rate limit persisted after retries`);
 }
 
+async function resolveChatConfig(override?: Partial<AiConfig>): Promise<AiConfig> {
+  const cfg = override?.apiKey || override?.provider || override?.model
+    ? { ...(await getAiConfig()), ...override } as AiConfig
+    : await getAiConfig();
+  if (!cfg.apiKey) throw new Error("AI service not configured — Settings থেকে API key সেট করুন");
+  return cfg;
+}
+
 /** Main entry — all generators + chat go through here */
 export async function aiChat(
   messages: AiMessage[],
   override?: Partial<AiConfig>,
   opts?: AiChatOptions
 ): Promise<string> {
-  const cfg = override?.apiKey || override?.provider || override?.model
-    ? { ...(await getAiConfig()), ...override } as AiConfig
-    : await getAiConfig();
-  if (!cfg.apiKey) throw new Error("AI service not configured — Settings থেকে API key সেট করুন");
+  return (await aiChatFull(messages, override, opts)).content;
+}
+
+/** Same as aiChat but also returns the provider finish reason, so callers
+ *  can tell a complete response ("stop") from a truncated one ("length"). */
+export async function aiChatFull(
+  messages: AiMessage[],
+  override?: Partial<AiConfig>,
+  opts?: AiChatOptions
+): Promise<AiChatResult> {
+  const cfg = await resolveChatConfig(override);
   if (cfg.provider === "ollama") return ollamaChat(cfg, messages, opts);
   return openAiCompatibleChat(cfg, messages, opts);
 }
@@ -457,9 +478,9 @@ export async function testAiConnection(input: Partial<AiConfig> & { provider: Ai
     baseUrl: (input.baseUrl ?? "").trim() || defaults.baseUrl,
   };
   if (!cfg.apiKey) throw new Error("API key is required");
-  const reply =
+  const result =
     provider === "ollama"
       ? await ollamaChat(cfg, [{ role: "user", content: "Reply with exactly: OK" }])
       : await openAiCompatibleChat(cfg, [{ role: "user", content: "Reply with exactly: OK" }]);
-  return { ok: true, reply: reply.slice(0, 200), provider: cfg.provider, model: cfg.model };
+  return { ok: true, reply: result.content.slice(0, 200), provider: cfg.provider, model: cfg.model };
 }

@@ -1,6 +1,6 @@
 import { slugify } from "../utils/helpers";
 import { findImages, extractKeywords } from "./imageFinder";
-import { aiChat, extractJsonObject } from "./aiProvider";
+import { aiChatFull, extractJsonObject } from "./aiProvider";
 
 export interface BlogPostData {
   title: string;
@@ -89,43 +89,10 @@ Rules:
 9. Tags: 3-5 relevant tags for categorization
 10. Return ONLY valid JSON, no markdown or extra text`;
 
-/**
- * Extract usable Markdown from a truncated JSON response like
- * `{"content":"# Title\n\nLong post...` (cut off mid-string by max_tokens).
- * Returns the unescaped content prefix, or "" if nothing salvageable.
- */
-function salvageTruncatedContent(raw: string): string {
-  // Strip code fences if the model wrapped the JSON
-  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const text = (fenced ? fenced[1] : raw).trim();
-  const marker = '"content"';
-  const idx = text.indexOf(marker);
-  if (idx === -1) {
-    // No JSON structure at all — treat the whole response as raw Markdown
-    // (can happen when jsonMode fell back to text mode on some providers).
-    return text.length > 500 ? text : "";
-  }
-  let start = text.indexOf('"', idx + marker.length);
-  if (start === -1) return "";
-  // Skip the opening quote, then walk the string honouring escapes until
-  // the closing unescaped quote — or end-of-input if truncated.
-  let out = "";
-  for (let i = start + 1; i < text.length; i++) {
-    const ch = text[i];
-    if (ch === "\\" && i + 1 < text.length) {
-      const next = text[i + 1];
-      if (next === "n") out += "\n";
-      else if (next === "t") out += "\t";
-      else if (next === "r") out += "\r";
-      else out += next; // \" \\ \/ etc.
-      i++;
-    } else if (ch === '"') {
-      break; // proper closing quote
-    } else {
-      out += ch;
-    }
-  }
-  return out.trim();
+/** Remove ```markdown fences if the model wrapped the article in them. */
+function stripCodeFences(raw: string): string {
+  const m = raw.match(/```(?:markdown|md)?\s*([\s\S]*?)```/i);
+  return (m ? m[1] : raw).trim();
 }
 
 export async function generateBlogPost(
@@ -137,104 +104,125 @@ export async function generateBlogPost(
   const imageKeywords = extractKeywords(title, category);
   const images = await findImages(imageKeywords, 3);
 
-  const prompt = `Write a complete, SEO-optimized blog post about: "${title}"
+  // ── Two-step generation ──────────────────────────────────
+  // The old single-call design stuffed 1200+ words of Markdown PLUS all
+  // meta fields into ONE JSON response: any verbose model blew past the
+  // token cap mid-string, JSON.parse failed 3/3, and the topic FAILED.
+  // Step 1 returns plain Markdown (a truncated article prefix is still
+  // usable text); step 2 returns a SMALL JSON object that cannot truncate.
+  const contentPrompt = `Write a complete, SEO-optimized blog post about: "${title}"
 
 Category: ${category}
 Target Keywords: ${keywords.join(", ") || "auto-detect from title"}
 ${description ? `Context: ${description}` : ""}
 
-Generate a complete blog post with ALL of the following in JSON format:
+Requirements:
+- 1200-1600 words of Markdown (H2/H3 headings, code examples, practical tips)
+- First paragraph MUST directly answer the core question in 40-60 words
+- H2 headings phrased as questions where natural
+- Educational, practical, engaging — write in Rasel's professional voice
+
+Return ONLY the Markdown article. No JSON, no code fences around it.`;
+
+  const contentMessages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: contentPrompt },
+  ] as { role: "system" | "user" | "assistant"; content: string }[];
+
+  // A usable article needs real body text; 1500 chars ≈ 250+ words minimum.
+  const MIN_CONTENT_CHARS = 1500;
+  let article = "";
+  let lastRaw = "";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const res = await aiChatFull(
+      attempt === 1
+        ? contentMessages
+        : [
+            ...contentMessages,
+            {
+              role: "user",
+              content:
+                "Your previous reply was cut off. Rewrite the article completely but keep it UNDER 1000 words so it fits. Return ONLY the Markdown.",
+            },
+          ],
+      undefined,
+      // 1600 words ≈ 2200 tokens; 6000 leaves headroom for verbose models
+      // while prompt (~900) + output stays under Groq's 8000 TPM limit.
+      { maxTokens: 6000 }
+    );
+    lastRaw = res.content;
+    const cleaned = stripCodeFences(res.content).trim();
+    console.log(
+      `[AI BLOG GENERATOR] Content attempt ${attempt}/2: len=${cleaned.length}, finish=${res.finishReason || "unknown"}`
+    );
+    if (cleaned.length > article.length) article = cleaned;
+    // Complete response with enough body → done. Truncated ("length") but
+    // long output → retry once for a complete article.
+    if (cleaned.length >= MIN_CONTENT_CHARS && res.finishReason !== "length") break;
+  }
+  if (article.length < MIN_CONTENT_CHARS) {
+    console.error("[AI BLOG GENERATOR] Content too short after retries. Last response:", lastRaw.slice(0, 500));
+    throw new Error("AI returned article content too short");
+  }
+  if (article.length < 4000) {
+    console.warn(`[AI BLOG GENERATOR] Article shorter than ideal (${article.length} chars) — publishing anyway`);
+  }
+
+  // ── Step 2: small meta JSON (title + article opening as context) ──
+  const metaPrompt = `For the blog post titled "${title}" (category: ${category}), return ONLY this JSON object (no markdown, no code fences):
 
 {
-  "content": "Full blog post content in Markdown format (1200-1600 words, with H2/H3 headings, code examples, practical tips)",
   "excerpt": "Compelling 120-160 character summary for the post card",
-  "readTime": "X min read (estimate based on content length)",
   "metaTitle": "SEO-optimized title (45-60 chars, include primary keyword + brand)",
   "metaDescription": "Compelling meta description (120-160 chars)",
   "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
   "tags": ["tag1", "tag2", "tag3"],
   "faqJson": [
-    {"question": "Common question 1?", "answer": "Detailed answer..."},
-    {"question": "Common question 2?", "answer": "Detailed answer..."},
-    {"question": "Common question 3?", "answer": "Detailed answer..."}
+    {"question": "Common question 1?", "answer": "Self-contained detailed answer..."},
+    {"question": "Common question 2?", "answer": "Self-contained detailed answer..."},
+    {"question": "Common question 3?", "answer": "Self-contained detailed answer..."}
   ],
   "howToSteps": [
     {"name": "Step 1 Title", "text": "Detailed step description..."},
     {"name": "Step 2 Title", "text": "Detailed step description..."},
     {"name": "Step 3 Title", "text": "Detailed step description..."}
   ],
-  "speakableText": "Summary paragraph optimized for voice search (1-2 sentences)"
+  "speakableText": "Standalone 40-60 word direct answer to the post's core question (voice search)"
 }
 
-IMPORTANT:
-- Content must be educational, practical, and engaging
-- First paragraph MUST directly answer the core question in 40-60 words
-- H2 headings phrased as questions where natural
-- Include real code examples where relevant
-- speakableText MUST be a standalone 40-60 word direct answer (voice/AEO)
-- Write in Rasel's professional voice
-- Ensure all JSON fields are properly formatted
-- Return ONLY the JSON object, no markdown code blocks`;
-
-  // Generate with retries. With response_format=json_object the model
-  // returns a strict object, so bad-JSON repairs are now rare. Repair
-  // attempts regenerate from scratch WITHOUT echoing the previous broken
-  // output back (the old code re-sent 4000 chars each retry, burning
-  // ~1000 extra TPM-limited tokens per attempt and causing 429 loops).
-  // NOTE: the most common "bad JSON" is TRUNCATION — the model was asked
-  // for 2000+ words but maxTokens cut it off mid-string. Repairs therefore
-  // explicitly demand SHORTER content so the retry fits the token budget.
-  const REPAIR_PROMPT = `Your previous response was not valid JSON (likely truncated by length). Return ONLY the JSON object with the exact fields requested (content, excerpt, readTime, metaTitle, metaDescription, keywords, tags, faqJson, howToSteps, speakableText). Keep content UNDER 1200 words so the response fits. No markdown, no explanation, no code fences.`;
-
-  const baseMessages = [
-    { role: "system", content: SYSTEM_PROMPT },
-    { role: "user", content: prompt },
-  ] as { role: "system" | "user" | "assistant"; content: string }[];
+Article opening for context:
+${article.slice(0, 800)}`;
 
   let parsed: any = null;
-  let lastContent = "";
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    const content = await aiChat(
-      attempt === 1
-        ? baseMessages
-        : [...baseMessages, { role: "user", content: REPAIR_PROMPT }],
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const res = await aiChatFull(
+      [
+        { role: "system", content: "You return only valid JSON objects. No prose, no code fences." },
+        { role: "user", content: metaPrompt },
+      ],
       undefined,
-      // 1200-1600 words ≈ 1600-2200 tokens + ~800 for meta/FAQ/HowTo.
-      // 6000 cap leaves headroom for verbose models while prompt (~900)
-      // + output stays under Groq's 8000 TPM limit.
-      { jsonMode: true, maxTokens: 6000 }
+      // Small object (~800 tokens) — cannot plausibly truncate at 2000.
+      { jsonMode: true, maxTokens: 2000 }
     );
-    lastContent = content;
     try {
-      const candidate = JSON.parse(extractJsonObject(content));
-      if (!candidate || typeof candidate.content !== "string" || !candidate.content.trim()) {
-        throw new Error("Missing content field");
-      }
+      const candidate = JSON.parse(extractJsonObject(res.content));
+      if (!candidate || typeof candidate !== "object") throw new Error("Not an object");
       parsed = candidate;
       break;
     } catch (err: any) {
       console.error(
-        `[AI BLOG GENERATOR] Attempt ${attempt}/3 returned bad JSON ` +
-          `(len=${content.length}, err=${err?.message || "parse failed"})` +
-          `${attempt < 3 ? ", retrying with repair prompt" : ""}`
+        `[AI BLOG GENERATOR] Meta attempt ${attempt}/2 bad JSON ` +
+          `(len=${res.content.length}, err=${err?.message || "parse failed"})`
       );
     }
   }
   if (!parsed) {
-    // Last resort: salvage truncated output into a usable post instead of
-    // failing the whole cron run. A truncated {"content":"...} still holds
-    // hundreds of words of good Markdown — extract the raw string prefix.
-    const salvaged = salvageTruncatedContent(lastContent);
-    if (salvaged && salvaged.length > 500) {
-      console.warn(
-        `[AI BLOG GENERATOR] Salvaging truncated response (${lastContent.length} chars) as post content`
-      );
-      parsed = { content: salvaged };
-    } else {
-      console.error("[AI BLOG GENERATOR] No valid JSON after 3 attempts. Last response:", lastContent.slice(0, 500));
-      throw new Error("Invalid AI response format");
-    }
+    // Meta is decoration — never fail the whole post for it. Title-derived
+    // fallbacks keep SEO fields populated; FAQ/HowTo simply stay empty.
+    console.warn("[AI BLOG GENERATOR] Meta JSON failed — using title-derived fallbacks");
+    parsed = {};
   }
+  parsed.content = article;
 
   // Build the complete blog post data
   const now = new Date();
