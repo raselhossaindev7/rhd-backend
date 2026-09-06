@@ -89,10 +89,15 @@ Rules:
 9. Tags: 3-5 relevant tags for categorization
 10. Return ONLY valid JSON, no markdown or extra text`;
 
-/** Remove ```markdown fences if the model wrapped the article in them. */
+/**
+ * Remove ``` fences ONLY when they wrap the entire response. The old regex
+ * matched the first fence ANYWHERE, so an article containing ```js code
+ * examples was truncated down to just its first code block ("too short").
+ */
 function stripCodeFences(raw: string): string {
-  const m = raw.match(/```(?:markdown|md)?\s*([\s\S]*?)```/i);
-  return (m ? m[1] : raw).trim();
+  const trimmed = raw.trim();
+  const m = trimmed.match(/^```(?:markdown|md)?\s*[\r\n]+([\s\S]*?)[\r\n]+```\s*$/i);
+  return (m ? m[1] : trimmed).trim();
 }
 
 export async function generateBlogPost(
@@ -161,7 +166,10 @@ Return ONLY the Markdown article. No JSON, no code fences around it.`;
     if (cleaned.length >= MIN_CONTENT_CHARS && res.finishReason !== "length") break;
   }
   if (article.length < MIN_CONTENT_CHARS) {
-    console.error("[AI BLOG GENERATOR] Content too short after retries. Last response:", lastRaw.slice(0, 500));
+    console.error(
+      `[AI BLOG GENERATOR] Content too short after retries (rawLen=${lastRaw.length}, keptLen=${article.length}). Last response:`,
+      lastRaw.slice(0, 500)
+    );
     throw new Error("AI returned article content too short");
   }
   if (article.length < 4000) {

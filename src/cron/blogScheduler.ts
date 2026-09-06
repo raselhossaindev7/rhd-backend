@@ -1,12 +1,17 @@
 import cron from "node-cron";
-import { runScheduledGeneration } from "../controllers/scheduleController";
+import { runScheduledGeneration, runMaintenance } from "../controllers/scheduleController";
 
-// ─── Blog Scheduler Cron Job ─────────────────────────────
-// Runs daily at 6:00 PM (18:00) - Asia/Dhaka timezone
-// Cron expression: "0 18 * * *" (every day at 18:00)
+// ─── Blog Autopilot (zero human input) ───────────────────
+// Daily post:  6:00 PM Asia/Dhaka (cron "0 12 * * *", evaluated in the
+//              Asia/Dhaka tz below, i.e. 12:00 UTC = 18:00 BST)
+// Maintenance: every 15 min — reclaims stuck GENERATING, revives FAILED
+//              with backoff, refills the topic buffer. Cheap DB queries,
+//              AI only fires when the buffer is actually low.
 
 let isRunning = false;
+let maintenanceRunning = false;
 let scheduledTask: cron.ScheduledTask | null = null;
+let maintenanceTask: cron.ScheduledTask | null = null;
 
 export function startBlogScheduler() {
   if (scheduledTask) {
@@ -36,13 +41,28 @@ export function startBlogScheduler() {
     timezone: "Asia/Dhaka", // Bangladesh timezone
   });
 
+  maintenanceTask = cron.schedule("*/15 * * * *", async () => {
+    if (maintenanceRunning || isRunning) return;
+    maintenanceRunning = true;
+    try {
+      await runMaintenance();
+    } catch (error) {
+      console.error("[CRON] Maintenance cycle failed:", error);
+    } finally {
+      maintenanceRunning = false;
+    }
+  }, {
+    timezone: "Asia/Dhaka",
+  });
+
   console.log(`
   ┌─────────────────────────────────────────┐
-  │   📅 Blog Scheduler Active              │
+  │   📅 Blog Autopilot Active              │
   │                                         │
-  │   Schedule: Daily at 6:00 PM (BST)     │
+  │   Post: Daily at 6:00 PM (BST)         │
+  │   Maintenance: every 15 min             │
   │   Timezone: Asia/Dhaka                  │
-  │   Status: Running                       │
+  │   Status: Running (no human needed)     │
   └─────────────────────────────────────────┘
   `);
 }
@@ -51,15 +71,21 @@ export function stopBlogScheduler() {
   if (scheduledTask) {
     scheduledTask.stop();
     scheduledTask = null;
-    console.log("[CRON] Blog scheduler stopped");
   }
+  if (maintenanceTask) {
+    maintenanceTask.stop();
+    maintenanceTask = null;
+  }
+  console.log("[CRON] Blog scheduler stopped");
 }
 
 export function getSchedulerStatus() {
   return {
     running: scheduledTask !== null,
+    maintenance: maintenanceTask !== null,
     isGenerating: isRunning,
     schedule: "0 18 * * *",
+    maintenanceSchedule: "*/15 * * * *",
     timezone: "Asia/Dhaka",
     nextRun: scheduledTask ? "Daily at 6:00 PM BST" : "Not scheduled",
   };

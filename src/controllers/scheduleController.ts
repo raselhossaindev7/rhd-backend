@@ -152,10 +152,13 @@ export async function generateTopicSuggestions(req: Request, res: Response) {
 // ─── Manual Post Generation ──────────────────────────────
 
 export async function generatePost(req: Request, res: Response) {
+  // NOTE: generation takes 1-3 min (two sequential AI calls). Awaiting it
+  // inside the HTTP cycle trips gateway timeouts (504 on Cloudflare/Render
+  // ~100s). So we validate + enqueue synchronously, respond 202 at once,
+  // and run the heavy work detached. Clients poll topics/stats for completion.
   if (generationInFlight) {
     return sendError(res, new ApiError(409, "A generation is already in progress — try again in a minute"));
   }
-  generationInFlight = true;
   try {
     const { topicId } = req.body;
 
@@ -175,45 +178,47 @@ export async function generatePost(req: Request, res: Response) {
       if (!topic) throw new ApiError(404, "No pending topics found");
     }
 
-    // Mark as generating
+    // Mark as generating BEFORE responding, so polls/retries see it
     await prisma.topic.update({
       where: { id: topic.id },
       data: { status: "GENERATING", attempts: { increment: 1 } },
     });
 
-    try {
-      // Generate the blog post
-      const postData = await generateBlogPost(
-        topic.title,
-        topic.category,
-        topic.keywords,
-        topic.description || undefined
-      );
+    generationInFlight = true;
+    const target = { id: topic.id, title: topic.title, category: topic.category, keywords: topic.keywords, description: topic.description };
 
-      const post = await persistGeneratedPost(topic.id, postData);
+    // Detached: must never throw back into Express (response already sent).
+    setImmediate(() => {
+      (async () => {
+        try {
+          const postData = await generateBlogPost(
+            target.title,
+            target.category,
+            target.keywords,
+            target.description || undefined
+          );
+          const post = await persistGeneratedPost(target.id, postData);
+          console.log(`[SCHEDULE] Manual generation complete: ${post.title}`);
+        } catch (genError) {
+          console.error(`[SCHEDULE] Manual generation failed for: ${target.title}`, genError);
+          await markTopicFailed(target.id, genError);
+        } finally {
+          generationInFlight = false;
+        }
+      })();
+    });
 
-      sendSuccess(res, {
-        message: "Blog post generated and published successfully",
-        post: {
-          id: post.id,
-          slug: post.slug,
-          title: post.title,
-          category: post.category,
-        },
-        topic: {
-          id: topic.id,
-          title: topic.title,
-          status: "PUBLISHED",
-        },
-      });
-    } catch (genError) {
-      await markTopicFailed(topic.id, genError);
-      throw genError;
-    }
+    sendSuccess(
+      res,
+      {
+        accepted: true,
+        message: `Generation started for "${target.title}" — it runs in the background (1-3 min). Watch the topic queue for completion.`,
+        topic: { id: target.id, title: target.title, status: "GENERATING" },
+      },
+      202
+    );
   } catch (error) {
     sendError(res, error as Error);
-  } finally {
-    generationInFlight = false;
   }
 }
 
@@ -261,6 +266,87 @@ export async function getScheduleStats(req: Request, res: Response) {
   }
 }
 
+// ─── Autopilot Maintenance (no human needed) ─────────────
+// Runs every 15 min via cron AND before each daily generation:
+//  1. sweep stuck GENERATING (crashed restarts, killed requests) → PENDING
+//  2. revive FAILED with backoff (transient AI/DB errors recover alone)
+//  3. refill the PENDING buffer so the queue never runs dry
+
+const MAX_AUTO_ATTEMPTS = 10;
+// A real generation takes 1-5 min (longer with 429 waits). Anything still
+// GENERATING after 25 min is dead (restart/timeout) — safe to reclaim.
+const STUCK_GENERATING_MINUTES = 25;
+// FAILED cooldown grows per attempt (15min, 30min, 45min…) capped at 6h,
+// so a rate-limited key recovers instead of being re-pounded.
+const reviveCooldownMs = (attempts: number) =>
+  Math.min(15 * 60 * 1000 * Math.max(1, attempts), 6 * 60 * 60 * 1000);
+// Keep ~5 days of daily posts queued.
+const TOPIC_BUFFER_TARGET = 5;
+
+export async function runMaintenance(): Promise<void> {
+  // 1. Sweep stuck GENERATING
+  try {
+    const stuckBefore = new Date(Date.now() - STUCK_GENERATING_MINUTES * 60 * 1000);
+    const stuck = await prisma.topic.findMany({
+      where: { status: "GENERATING", updatedAt: { lt: stuckBefore } },
+      select: { id: true, title: true, attempts: true },
+    });
+    for (const t of stuck) {
+      if (t.attempts >= MAX_AUTO_ATTEMPTS) {
+        await prisma.topic.update({
+          where: { id: t.id },
+          data: { status: "FAILED", error: "Stuck in GENERATING repeatedly — attempts exhausted, needs a look" },
+        });
+        console.error(`[CRON] Topic parked as FAILED after ${t.attempts} attempts (was stuck): ${t.title}`);
+      } else {
+        await prisma.topic.update({
+          where: { id: t.id },
+          data: { status: "PENDING", error: "Auto-recovered from stuck GENERATING" },
+        });
+        console.log(`[CRON] Reclaimed stuck topic → PENDING: ${t.title}`);
+      }
+    }
+  } catch (err) {
+    console.error("[CRON] Stuck-sweep failed:", err);
+  }
+
+  // 2. Revive FAILED with per-topic backoff (updateMany can't do per-row
+  // cooldowns, so select candidates then filter in code — small table).
+  try {
+    const failed = await prisma.topic.findMany({
+      where: { status: "FAILED", attempts: { lt: MAX_AUTO_ATTEMPTS } },
+      select: { id: true, title: true, attempts: true, updatedAt: true },
+    });
+    const now = Date.now();
+    let revived = 0;
+    for (const t of failed) {
+      if (now - new Date(t.updatedAt).getTime() < reviveCooldownMs(t.attempts)) continue;
+      await prisma.topic.update({
+        where: { id: t.id },
+        data: { status: "PENDING", error: null },
+      });
+      revived++;
+    }
+    if (revived > 0) console.log(`[CRON] Re-queued ${revived} failed topic(s)`);
+  } catch (err) {
+    console.error("[CRON] Failed-revive failed:", err);
+  }
+
+  // 3. Refill topic buffer (skip while a generation holds the AI/DB busy)
+  try {
+    if (generationInFlight) return;
+    const pending = await prisma.topic.count({ where: { status: "PENDING" } });
+    if (pending < TOPIC_BUFFER_TARGET) {
+      console.log(`[CRON] Topic buffer low (${pending}/${TOPIC_BUFFER_TARGET}) — generating ideas...`);
+      const topics = await generateTopics(TOPIC_BUFFER_TARGET);
+      const saved = await saveTopics(topics);
+      console.log(`[CRON] Buffer refilled: ${saved} new topic(s)`);
+    }
+  } catch (err) {
+    console.error("[CRON] Buffer refill failed (will retry next cycle):", err);
+  }
+}
+
 // ─── Cron Job Trigger (Internal) ─────────────────────────
 
 export async function runScheduledGeneration() {
@@ -272,19 +358,7 @@ export async function runScheduledGeneration() {
   console.log("[CRON] Running scheduled blog generation...");
 
   try {
-    // Self-heal: re-queue failed topics (max 3 attempts) so transient
-    // AI/DB errors don't leave topics stuck in FAILED forever.
-    // Cooldown: only revive failures older than 15 min — without this,
-    // a rate-limited key gets re-pounded on every trigger instead of
-    // being allowed to recover.
-    const reviveAfter = new Date(Date.now() - 15 * 60 * 1000);
-    const revived = await prisma.topic.updateMany({
-      where: { status: "FAILED", attempts: { lt: 3 }, updatedAt: { lt: reviveAfter } },
-      data: { status: "PENDING", error: null },
-    });
-    if (revived.count > 0) {
-      console.log(`[CRON] Re-queued ${revived.count} failed topic(s)`);
-    }
+    await runMaintenance();
 
     // Find next pending topic
     const topic = await prisma.topic.findFirst({
