@@ -9,6 +9,7 @@ import {
   generateTopicSuggestions,
   generatePost,
   getScheduleStats,
+  getGenerationProgress,
 } from "../controllers/scheduleController";
 
 const router = Router();
@@ -30,5 +31,8 @@ router.post("/generate", generatePost);
 // ─── Stats ───────────────────────────────────────────────
 // Cached 30s — same pool-stampede protection as dashboard/analytics.
 router.get("/stats", cache(30), getScheduleStats);
+
+// ─── Live generation progress (polled by admin bar — NEVER cache) ──
+router.get("/generation-status", getGenerationProgress);
 
 export default router;

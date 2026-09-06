@@ -409,6 +409,17 @@ export async function runMaintenance(): Promise<void> {
   }
 }
 
+// ─── Live Generation Status (admin progress bar polling) ──
+// NOTE: the route must NOT be cached — the bar polls every few seconds.
+
+export async function getGenerationProgress(_req: Request, res: Response) {
+  try {
+    sendSuccess(res, getGenerationStatus());
+  } catch (error) {
+    sendError(res, error as Error);
+  }
+}
+
 // ─── Cron Job Trigger (Internal) ─────────────────────────
 
 export async function runScheduledGeneration() {
