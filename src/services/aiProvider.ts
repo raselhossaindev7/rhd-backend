@@ -241,15 +241,21 @@ function parseRetryAfterSeconds(body: string, fallbackSeconds: number): number {
   return fallbackSeconds;
 }
 
-async function ollamaChat(cfg: AiConfig, messages: AiMessage[]): Promise<string> {
+async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOptions = {}): Promise<string> {
   const base = (cfg.baseUrl || AI_PROVIDER_DEFAULTS.ollama.baseUrl).replace(/\/$/, "");
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+  const body: Record<string, unknown> = { model: cfg.model, messages, stream: false };
+  // Mirror maxTokens as num_predict so long-form generations can't run
+  // unbounded on Ollama while other providers are capped.
+  if (opts.maxTokens) body.options = { num_predict: opts.maxTokens };
+  // Ollama Cloud chat endpoint honours response_format like OpenAI
+  if (opts.jsonMode) (body as any).response_format = { type: "json_object" };
   const res = await fetch(`${base}/api/chat`, {
     method: "POST",
     headers,
-    body: JSON.stringify({ model: cfg.model, messages, stream: false }),
-    signal: AbortSignal.timeout(120000),
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(180000),
   });
   if (!res.ok) {
     const err = await res.text();
@@ -341,7 +347,7 @@ export async function aiChat(
     ? { ...(await getAiConfig()), ...override } as AiConfig
     : await getAiConfig();
   if (!cfg.apiKey) throw new Error("AI service not configured — Settings থেকে API key সেট করুন");
-  if (cfg.provider === "ollama") return ollamaChat(cfg, messages);
+  if (cfg.provider === "ollama") return ollamaChat(cfg, messages, opts);
   return openAiCompatibleChat(cfg, messages, opts);
 }
 

@@ -30,14 +30,33 @@ app.use(
       if (!origin) return callback(null, true);
 
       const normalize = (url: string) =>
-        url.replace(/\/$/, "").replace(/^https?:\/\/(www\.)?/i, "https://");
+        url.trim().replace(/\/$/, "").replace(/^https?:\/\/(www\.)?/i, "https://");
 
       const normalizedOrigin = normalize(origin);
-      const allowed = config.corsOrigins.some(
-        (o) => o === "*" || normalize(o) === normalizedOrigin
-      );
 
-      if (allowed) return callback(null, true);
+      const matchesPattern = (pattern: string, value: string): boolean => {
+        // Exact match (or global wildcard)
+        if (pattern === "*") return true;
+        if (!pattern.includes("*")) return normalize(pattern) === value;
+        // Wildcard, e.g. "https://*.vercel.app" → /^https:\/\/.*\.vercel\.app$/
+        const escaped = normalize(pattern)
+          .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/\\\*/g, ".*");
+        return new RegExp(`^${escaped}$`, "i").test(value);
+      };
+
+      const explicitAllowed = config.corsOrigins.some((o) => matchesPattern(o, normalizedOrigin));
+      if (explicitAllowed) return callback(null, true);
+
+      // Built-in: Vercel preview deployments for this project
+      // (URLs change on every git push: rhd-admin-<hash>-<team>.vercel.app),
+      // plus any raselhossain.dev subdomain. These are first-party
+      // frontends — safe to allow without a backend redeploy per preview.
+      const trustedPreview =
+        /^https:\/\/rhd-(admin|portfolio|client|frontend)(-[a-z0-9-]+)?\.vercel\.app$/i.test(normalizedOrigin) ||
+        /^https:\/\/([a-z0-9-]+\.)*raselhossain\.dev$/i.test(normalizedOrigin);
+
+      if (trustedPreview) return callback(null, true);
 
       return callback(new Error(`CORS policy: ${origin} not allowed`));
     },

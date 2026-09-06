@@ -52,16 +52,34 @@ SEO Requirements:
 - Include HowTo steps for tutorial-style posts
 - Speakable text for voice search optimization
 
+AEO (Answer Engine Optimization — featured snippets, voice assistants):
+- Open the content with a direct 40-60 word answer to the post's core
+  question, so it can be lifted verbatim into a snippet or voice reply
+- Phrase H2 headings as questions readers actually ask ("How does X work?")
+- Keep FAQ answers self-contained (each must make sense without the article)
+
+GEO/AIO (Generative Engine Optimization — ChatGPT, Perplexity, AI Overviews):
+- Include 2-4 quotable facts or statistics with context (numbers, versions,
+  benchmarks) phrased as standalone statements AI can cite
+- Use precise entity names (product names, versions, years) — never vague
+  pronouns — so cited passages stay accurate out of context
+- One idea per paragraph; short paragraphs (2-4 sentences)
+
+E-E-A-T (experience signals that rank and get cited):
+- Cite Rasel's real experience (6+ years, 168+ Fiverr projects) where relevant
+- Prefer concrete outcomes ("reduced build time from 9min to 90s") over
+  generic claims ("much faster")
+
 Content Structure:
-- Engaging introduction with hook
-- Well-structured headings (H2, H3)
+- Direct-answer opening paragraph (40-60 words, no hook preamble)
+- Well-structured question-style headings (H2, H3)
 - Code examples where relevant
 - Practical tips and best practices
 - Conclusion with call-to-action
 
 Rules:
 1. Content must be 100% unique and original
-2. Minimum 1500 words, ideally 2000-2500 words
+2. 1200-1600 words (hard limit — longer outputs get truncated and rejected)
 3. Include practical code examples when relevant
 4. Meta title: 45-60 characters, include primary keyword
 5. Meta description: 120-160 characters, compelling summary
@@ -70,6 +88,45 @@ Rules:
 8. Keywords: 5-8 relevant SEO keywords
 9. Tags: 3-5 relevant tags for categorization
 10. Return ONLY valid JSON, no markdown or extra text`;
+
+/**
+ * Extract usable Markdown from a truncated JSON response like
+ * `{"content":"# Title\n\nLong post...` (cut off mid-string by max_tokens).
+ * Returns the unescaped content prefix, or "" if nothing salvageable.
+ */
+function salvageTruncatedContent(raw: string): string {
+  // Strip code fences if the model wrapped the JSON
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const text = (fenced ? fenced[1] : raw).trim();
+  const marker = '"content"';
+  const idx = text.indexOf(marker);
+  if (idx === -1) {
+    // No JSON structure at all — treat the whole response as raw Markdown
+    // (can happen when jsonMode fell back to text mode on some providers).
+    return text.length > 500 ? text : "";
+  }
+  let start = text.indexOf('"', idx + marker.length);
+  if (start === -1) return "";
+  // Skip the opening quote, then walk the string honouring escapes until
+  // the closing unescaped quote — or end-of-input if truncated.
+  let out = "";
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "\\" && i + 1 < text.length) {
+      const next = text[i + 1];
+      if (next === "n") out += "\n";
+      else if (next === "t") out += "\t";
+      else if (next === "r") out += "\r";
+      else out += next; // \" \\ \/ etc.
+      i++;
+    } else if (ch === '"') {
+      break; // proper closing quote
+    } else {
+      out += ch;
+    }
+  }
+  return out.trim();
+}
 
 export async function generateBlogPost(
   title: string,
@@ -89,7 +146,7 @@ ${description ? `Context: ${description}` : ""}
 Generate a complete blog post with ALL of the following in JSON format:
 
 {
-  "content": "Full blog post content in Markdown format (1500-2500 words, with H2/H3 headings, code examples, practical tips)",
+  "content": "Full blog post content in Markdown format (1200-1600 words, with H2/H3 headings, code examples, practical tips)",
   "excerpt": "Compelling 120-160 character summary for the post card",
   "readTime": "X min read (estimate based on content length)",
   "metaTitle": "SEO-optimized title (45-60 chars, include primary keyword + brand)",
@@ -111,7 +168,10 @@ Generate a complete blog post with ALL of the following in JSON format:
 
 IMPORTANT:
 - Content must be educational, practical, and engaging
+- First paragraph MUST directly answer the core question in 40-60 words
+- H2 headings phrased as questions where natural
 - Include real code examples where relevant
+- speakableText MUST be a standalone 40-60 word direct answer (voice/AEO)
 - Write in Rasel's professional voice
 - Ensure all JSON fields are properly formatted
 - Return ONLY the JSON object, no markdown code blocks`;
@@ -121,7 +181,10 @@ IMPORTANT:
   // attempts regenerate from scratch WITHOUT echoing the previous broken
   // output back (the old code re-sent 4000 chars each retry, burning
   // ~1000 extra TPM-limited tokens per attempt and causing 429 loops).
-  const REPAIR_PROMPT = `Your previous response was not valid JSON. Return ONLY the JSON object with the exact fields requested (content, excerpt, readTime, metaTitle, metaDescription, keywords, tags, faqJson, howToSteps, speakableText). No markdown, no explanation, no code fences.`;
+  // NOTE: the most common "bad JSON" is TRUNCATION — the model was asked
+  // for 2000+ words but maxTokens cut it off mid-string. Repairs therefore
+  // explicitly demand SHORTER content so the retry fits the token budget.
+  const REPAIR_PROMPT = `Your previous response was not valid JSON (likely truncated by length). Return ONLY the JSON object with the exact fields requested (content, excerpt, readTime, metaTitle, metaDescription, keywords, tags, faqJson, howToSteps, speakableText). Keep content UNDER 1200 words so the response fits. No markdown, no explanation, no code fences.`;
 
   const baseMessages = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -136,9 +199,10 @@ IMPORTANT:
         ? baseMessages
         : [...baseMessages, { role: "user", content: REPAIR_PROMPT }],
       undefined,
-      // 2000-2500 words ≈ 3000-3500 tokens; cap keeps prompt+output
-      // under Groq's 8000 TPM limit even across a repair retry.
-      { jsonMode: true, maxTokens: 4096 }
+      // 1200-1600 words ≈ 1600-2200 tokens + ~800 for meta/FAQ/HowTo.
+      // 6000 cap leaves headroom for verbose models while prompt (~900)
+      // + output stays under Groq's 8000 TPM limit.
+      { jsonMode: true, maxTokens: 6000 }
     );
     lastContent = content;
     try {
@@ -148,15 +212,28 @@ IMPORTANT:
       }
       parsed = candidate;
       break;
-    } catch {
+    } catch (err: any) {
       console.error(
-        `[AI BLOG GENERATOR] Attempt ${attempt}/3 returned bad JSON${attempt < 3 ? ", retrying with repair prompt" : ""}`
+        `[AI BLOG GENERATOR] Attempt ${attempt}/3 returned bad JSON ` +
+          `(len=${content.length}, err=${err?.message || "parse failed"})` +
+          `${attempt < 3 ? ", retrying with repair prompt" : ""}`
       );
     }
   }
   if (!parsed) {
-    console.error("[AI BLOG GENERATOR] No valid JSON after 3 attempts. Last response:", lastContent.slice(0, 500));
-    throw new Error("Invalid AI response format");
+    // Last resort: salvage truncated output into a usable post instead of
+    // failing the whole cron run. A truncated {"content":"...} still holds
+    // hundreds of words of good Markdown — extract the raw string prefix.
+    const salvaged = salvageTruncatedContent(lastContent);
+    if (salvaged && salvaged.length > 500) {
+      console.warn(
+        `[AI BLOG GENERATOR] Salvaging truncated response (${lastContent.length} chars) as post content`
+      );
+      parsed = { content: salvaged };
+    } else {
+      console.error("[AI BLOG GENERATOR] No valid JSON after 3 attempts. Last response:", lastContent.slice(0, 500));
+      throw new Error("Invalid AI response format");
+    }
   }
 
   // Build the complete blog post data
