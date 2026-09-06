@@ -1,9 +1,6 @@
 import { Request, Response } from "express";
 import { sendSuccess, sendError } from "../utils/helpers";
-
-const OLLAMA_API_KEY = process.env.OLLAMA_API_KEY;
-const OLLAMA_BASE_URL = "https://ollama.com";
-const OLLAMA_MODEL = "minimax-m3:cloud";
+import { aiChat } from "../services/aiProvider";
 
 const SYSTEM_PROMPT = `You are Rasel Hossain's AI assistant on his portfolio website (raselhossain.dev). You are friendly, professional, and helpful.
 
@@ -64,36 +61,12 @@ export async function chat(req: Request, res: Response) {
       return sendError(res, new Error("Messages array is required"));
     }
 
-    if (!OLLAMA_API_KEY) {
-      return sendError(res, new Error("AI service not configured"));
-    }
-
     const apiMessages = [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...messages.slice(-20),
+      { role: "system" as const, content: SYSTEM_PROMPT },
+      ...messages.slice(-20).map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
     ];
 
-    const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${OLLAMA_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: apiMessages,
-        stream: false,
-      }),
-    });
-
-    if (!response.ok) {
-      const err = await response.text();
-      console.error("[CHAT ERROR]", response.status, err);
-      return sendError(res, new Error("AI service error"));
-    }
-
-    const data: any = await response.json();
-    const reply = data.message?.content || "I'm not sure how to respond. Please try again.";
+    const reply = await aiChat(apiMessages);
 
     sendSuccess(res, { reply });
   } catch (error) {

@@ -7,3 +7,10 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # Runtime pooled URL (transaction mode, 6543) — set in dashboard.
+      - key: DATABASE_URL
+        sync: false
+      # Migrations only (session-mode pooler, 5432) — set in dashboard.
+      # `migrate deploy` uses DIRECT_URL (see prisma/schema.prisma).
+      - key: DIRECT_URL
+        sync: false

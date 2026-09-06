@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { trackPageView, getAnalytics } from "../controllers/analyticsController";
 import { authenticate, authorize } from "../middleware/auth";
+import { cache } from "../middleware/cache";
 import { validate } from "../middleware/validate";
 import { z } from "zod";
 
@@ -14,6 +15,8 @@ const trackSchema = z.object({
 router.post("/track", validate(trackSchema), trackPageView);
 
 // Protected (admin) - view analytics
-router.get("/", authenticate, authorize(["ADMIN"]), getAnalytics);
+// 12 heavy aggregates, polled every 30s by admin — cache 30s so polling
+// can't stampede the 10-connection pool. Staleness of 30s is fine.
+router.get("/", authenticate, authorize(["ADMIN"]), cache(30), getAnalytics);
 
 export default router;

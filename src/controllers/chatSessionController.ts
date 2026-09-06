@@ -78,15 +78,15 @@ export async function getChatSessions(req: AuthRequest, res: Response) {
     const limitNum = parseInt(limit as string);
     const skip = (pageNum - 1) * limitNum;
 
-    const [sessions, total] = await Promise.all([
-      prisma.chatSession.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: limitNum,
-      }),
-      prisma.chatSession.count({ where }),
-    ]);
+    // Sequential reads (no $transaction — see db.ts: a batch pins one
+    // server connection on the Supabase transaction-mode pooler).
+    const sessions = await prisma.chatSession.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limitNum,
+    });
+    const total = await prisma.chatSession.count({ where });
 
     sendSuccess(res, {
       sessions,
@@ -162,18 +162,16 @@ export async function deleteChatSession(req: AuthRequest, res: Response) {
 
 export async function getChatStats(req: AuthRequest, res: Response) {
   try {
-    const [total, newCount, contacted, closed] = await Promise.all([
-      prisma.chatSession.count(),
-      prisma.chatSession.count({ where: { status: "new" } }),
-      prisma.chatSession.count({ where: { status: "contacted" } }),
-      prisma.chatSession.count({ where: { status: "closed" } }),
-    ]);
-
+    // Sequential counts (no $transaction — see db.ts: a batch pins one
+    // server connection on the Supabase transaction-mode pooler).
+    // Slight staleness between counts is fine for a stats endpoint.
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayCount = await prisma.chatSession.count({
-      where: { createdAt: { gte: today } },
-    });
+    const total = await prisma.chatSession.count();
+    const newCount = await prisma.chatSession.count({ where: { status: "new" } });
+    const contacted = await prisma.chatSession.count({ where: { status: "contacted" } });
+    const closed = await prisma.chatSession.count({ where: { status: "closed" } });
+    const todayCount = await prisma.chatSession.count({ where: { createdAt: { gte: today } } });
 
     sendSuccess(res, {
       total,

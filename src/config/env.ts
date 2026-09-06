@@ -40,6 +40,15 @@ export const config = {
     from: process.env.EMAIL_FROM || "Rasel Hossain <raselhossaindev7@gmail.com>",
   },
 
-  // ─── AI / Ollama ────────────────────────────────────────
+  // ─── AI / Multi-provider ──────────────────────────────
+  // Active provider is resolved at runtime from DB (SystemSetting),
+  // env values below are fallbacks / initial defaults.
   ollamaApiKey: process.env.OLLAMA_API_KEY || "",
+  geminiApiKey: process.env.GEMINI_API_KEY || "",
+  openrouterApiKey: process.env.OPENROUTER_API_KEY || "",
+  groqApiKey: process.env.GROQ_API_KEY || "",
+  cerebrasApiKey: process.env.CEREBRAS_API_KEY || "",
+  aiProvider: process.env.AI_PROVIDER || "",
+  aiModel: process.env.AI_MODEL || "",
+  aiBaseUrl: process.env.AI_BASE_URL || "",
 };

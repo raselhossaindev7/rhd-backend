@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─── User ────────────────────────────────────────────────
@@ -357,6 +358,16 @@ model ChatSession {
   @@index([status])
   @@index([createdAt])
   @@map("chat_sessions")
+}
+
+// ─── System Settings (key-value store for runtime config) ──
+
+model SystemSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+
+  @@map("system_settings")
 }
 
 // ─── Page Views / Analytics ──────────────────────────────

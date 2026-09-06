@@ -157,27 +157,27 @@ export async function getEmailLogs(params: {
     ];
   }
 
-  const [logs, total] = await Promise.all([
-    prisma.emailLog.findMany({
-      where,
-      orderBy: { sentAt: "desc" },
-      skip,
-      take: limit,
-      select: {
-        id: true,
-        from: true,
-        to: true,
-        subject: true,
-        type: true,
-        status: true,
-        templateId: true,
-        sentAt: true,
-        readAt: true,
-        createdAt: true,
-      },
-    }),
-    prisma.emailLog.count({ where }),
-  ]);
+  // Sequential reads (no $transaction — see db.ts: a batch pins one
+  // server connection on the Supabase transaction-mode pooler).
+  const logs = await prisma.emailLog.findMany({
+    where,
+    orderBy: { sentAt: "desc" },
+    skip,
+    take: limit,
+    select: {
+      id: true,
+      from: true,
+      to: true,
+      subject: true,
+      type: true,
+      status: true,
+      templateId: true,
+      sentAt: true,
+      readAt: true,
+      createdAt: true,
+    },
+  });
+  const total = await prisma.emailLog.count({ where });
 
   return {
     emails: logs,
@@ -196,23 +196,24 @@ export async function getEmailLogById(id: string) {
 }
 
 export async function getEmailStats() {
-  const [inbox, sent, unread, trash, archive, total] = await Promise.all([
-    prisma.emailLog.count({
-      where: { type: "INBOUND", status: { notIn: ["TRASH", "ARCHIVED"] } },
-    }),
-    prisma.emailLog.count({
-      where: {
-        type: { in: ["OUTBOUND", "SYSTEM", "BULK"] },
-        status: { notIn: ["TRASH", "ARCHIVED"] },
-      },
-    }),
-    prisma.emailLog.count({
-      where: { type: "INBOUND", status: "SENT" },
-    }),
-    prisma.emailLog.count({ where: { status: "TRASH" } }),
-    prisma.emailLog.count({ where: { status: "ARCHIVED" } }),
-    prisma.emailLog.count(),
-  ]);
+  // Sequential counts (no $transaction — see db.ts: a batch pins one
+  // server connection on the Supabase transaction-mode pooler).
+  // Slight staleness between counts is fine for a stats endpoint.
+  const inbox = await prisma.emailLog.count({
+    where: { type: "INBOUND", status: { notIn: ["TRASH", "ARCHIVED"] } },
+  });
+  const sent = await prisma.emailLog.count({
+    where: {
+      type: { in: ["OUTBOUND", "SYSTEM", "BULK"] },
+      status: { notIn: ["TRASH", "ARCHIVED"] },
+    },
+  });
+  const unread = await prisma.emailLog.count({
+    where: { type: "INBOUND", status: "SENT" },
+  });
+  const trash = await prisma.emailLog.count({ where: { status: "TRASH" } });
+  const archive = await prisma.emailLog.count({ where: { status: "ARCHIVED" } });
+  const total = await prisma.emailLog.count();
 
   return { inbox, sent, unread, trash, archive, total };
 }

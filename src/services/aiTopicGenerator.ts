@@ -1,9 +1,5 @@
 import prisma from "../config/db";
-import { config } from "../config/env";
-
-const OLLAMA_API_KEY = config.ollamaApiKey;
-const OLLAMA_BASE_URL = "https://ollama.com";
-const OLLAMA_MODEL = "minimax-m3:cloud";
+import { aiChat, extractJsonObject } from "./aiProvider";
 
 interface GeneratedTopic {
   title: string;
@@ -51,23 +47,19 @@ Rules:
 7. Each topic must have: title, category, keywords (3-5), description (1-2 sentences)`;
 
 export async function generateTopics(count: number = 5): Promise<GeneratedTopic[]> {
-  if (!OLLAMA_API_KEY) {
-    throw new Error("AI service not configured");
-  }
-
-  // Fetch existing topics and post titles to avoid duplicates
-  const [existingTopics, recentPosts] = await Promise.all([
-    prisma.topic.findMany({
-      select: { title: true },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    }),
-    prisma.post.findMany({
-      select: { title: true, category: true },
-      orderBy: { date: "desc" },
-      take: 30,
-    }),
-  ]);
+  // Fetch existing topics and post titles to avoid duplicates.
+  // Sequential reads (no $transaction — see db.ts: a batch pins one
+  // server connection on the Supabase transaction-mode pooler).
+  const existingTopics = await prisma.topic.findMany({
+    select: { title: true },
+    orderBy: { createdAt: "desc" },
+    take: 50,
+  });
+  const recentPosts = await prisma.post.findMany({
+    select: { title: true, category: true },
+    orderBy: { date: "desc" },
+    take: 30,
+  });
 
   const existingTitles = [
     ...existingTopics.map((t) => t.title),
@@ -99,40 +91,38 @@ Return a JSON array with this exact format:
 
 IMPORTANT: Return ONLY the JSON array, no markdown code blocks, no extra text.`;
 
-  const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OLLAMA_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-      stream: false,
-    }),
-  });
+  const content = await aiChat([
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: prompt },
+  ]);
 
-  if (!response.ok) {
-    const err = await response.text();
-    console.error("[AI TOPIC GENERATOR ERROR]", response.status, err);
-    throw new Error("AI service error");
+  // Parse JSON from response — tolerant of ``` fences, prose around
+  // the array, and object-wrapped arrays ({"topics": [...]})
+  const arrayMatch = content.match(/\[[\s\S]*\]/);
+  let raw: unknown = null;
+  if (arrayMatch) {
+    try {
+      raw = JSON.parse(arrayMatch[0]);
+    } catch {
+      raw = null;
+    }
   }
-
-  const data: any = await response.json();
-  const content = data.message?.content || "";
-
-  // Parse JSON from response
-  const jsonMatch = content.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    console.error("[AI TOPIC GENERATOR] No JSON array found in response:", content);
+  if (!Array.isArray(raw)) {
+    try {
+      const obj = JSON.parse(extractJsonObject(content)) as Record<string, unknown>;
+      const firstArray = Object.values(obj).find((v) => Array.isArray(v));
+      if (Array.isArray(firstArray)) raw = firstArray;
+    } catch {
+      raw = null;
+    }
+  }
+  if (!Array.isArray(raw)) {
+    console.error("[AI TOPIC GENERATOR] No JSON array found in response:", content.slice(0, 500));
     throw new Error("Invalid AI response format");
   }
 
   try {
-    const topics = JSON.parse(jsonMatch[0]) as GeneratedTopic[];
+    const topics = raw as GeneratedTopic[];
 
     // Validate and sanitize
     return topics

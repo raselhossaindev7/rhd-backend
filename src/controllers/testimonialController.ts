@@ -12,10 +12,13 @@ export const getTestimonials = async (req: Request, res: Response) => {
     // Cap page size so a single request can never dump the whole table
     const take = Math.min(limit ? parseInt(limit as string) || 50 : 50, 100);
 
-    const [testimonials, total] = await Promise.all([
-      prisma.testimonial.findMany({ where, orderBy, take }),
-      prisma.testimonial.count({ where }),
-    ]);
+    // Sequential reads (no $transaction): each query checks a pooled
+    // connection out briefly and releases it. A $transaction batch pins
+    // one server connection on the Supabase transaction-mode pooler for
+    // the whole batch and is fragile there (10054 / "server closed the
+    // connection"). Reads don't need transactional consistency.
+    const testimonials = await prisma.testimonial.findMany({ where, orderBy, take });
+    const total = await prisma.testimonial.count({ where });
 
     res.json({ success: true, data: { testimonials, total } });
   } catch (error) {

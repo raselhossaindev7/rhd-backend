@@ -80,118 +80,113 @@ export async function getAnalytics(req: Request, res: Response) {
     const since = new Date();
     since.setDate(since.getDate() - parseInt(days as string));
 
-    const [
-      totalViews,
-      uniqueIps,
-      uniquePaths,
-      topPages,
-      viewsByDay,
-      browserStats,
-      osStats,
-      deviceStats,
-      countryStats,
-      cityStats,
-      recentViews,
-      hourlyTraffic,
-    ] = await Promise.all([
-      prisma.pageView.count({ where: { createdAt: { gte: since } } }),
+    // NOTE: sequential reads, NOT prisma.$transaction([...]) and NOT
+    // Promise.all. Each query checks a pooled connection out briefly and
+    // releases it. A $transaction batch pins one server connection on the
+    // Supabase transaction-mode pooler for all 12 queries — and mixing
+    // $queryRaw into the batch is especially fragile there (10054 /
+    // "server closed the connection"). With the admin polling this
+    // endpoint every 30s, pinning starved the pool (pool-timeout → retry
+    // storm → P1001 for everyone). Slight staleness between aggregates
+    // is fine for analytics. (Route is also cached 30s — see routes.)
+    // Raw queries stay unmapped; mapping happens after.
+    const totalViews = await prisma.pageView.count({ where: { createdAt: { gte: since } } });
 
-      // COUNT(DISTINCT ...) in SQL instead of fetching all rows into Node.
-      // The old version loaded every matching row and counted in JS.
-      prisma.$queryRaw<{ count: number }[]>`
-        SELECT COUNT(DISTINCT ip)::int AS count FROM page_views
-        WHERE "createdAt" >= ${since} AND ip IS NOT NULL
-      `.then((rows) => rows[0]?.count ?? 0),
+    // COUNT(DISTINCT ...) in SQL instead of fetching all rows into Node.
+    // The old version loaded every matching row and counted in JS.
+    const uniqueIpRows = await prisma.$queryRaw<{ count: number }[]>`
+      SELECT COUNT(DISTINCT ip)::int AS count FROM page_views
+      WHERE "createdAt" >= ${since} AND ip IS NOT NULL
+    `;
 
-      prisma.$queryRaw<{ count: number }[]>`
-        SELECT COUNT(DISTINCT path)::int AS count FROM page_views
-        WHERE "createdAt" >= ${since}
-      `.then((rows) => rows[0]?.count ?? 0),
+    const uniquePathRows = await prisma.$queryRaw<{ count: number }[]>`
+      SELECT COUNT(DISTINCT path)::int AS count FROM page_views
+      WHERE "createdAt" >= ${since}
+    `;
 
-      prisma.pageView.groupBy({
-        by: ["path"],
-        where: { createdAt: { gte: since } },
-        _count: { path: true },
-        orderBy: { _count: { path: "desc" } },
-        take: 10,
-      }),
+    const topPages = await prisma.pageView.groupBy({
+      by: ["path"],
+      where: { createdAt: { gte: since } },
+      _count: { path: true },
+      orderBy: { _count: { path: "desc" } },
+      take: 10,
+    });
 
-      prisma.$queryRaw`
-        SELECT DATE("createdAt") as date, COUNT(*)::int as views
-        FROM page_views
-        WHERE "createdAt" >= ${since}
-        GROUP BY DATE("createdAt")
-        ORDER BY date DESC
-      `,
+    const viewsByDay = await prisma.$queryRaw`
+      SELECT DATE("createdAt") as date, COUNT(*)::int as views
+      FROM page_views
+      WHERE "createdAt" >= ${since}
+      GROUP BY DATE("createdAt")
+      ORDER BY date DESC
+    `;
 
-      prisma.pageView.groupBy({
-        by: ["browser"],
-        where: { createdAt: { gte: since }, browser: { not: null } },
-        _count: { browser: true },
-        orderBy: { _count: { browser: "desc" } },
-        take: 8,
-      }),
+    const browserStats = await prisma.pageView.groupBy({
+      by: ["browser"],
+      where: { createdAt: { gte: since }, browser: { not: null } },
+      _count: { browser: true },
+      orderBy: { _count: { browser: "desc" } },
+      take: 8,
+    });
 
-      prisma.pageView.groupBy({
-        by: ["os"],
-        where: { createdAt: { gte: since }, os: { not: null } },
-        _count: { os: true },
-        orderBy: { _count: { os: "desc" } },
-        take: 8,
-      }),
+    const osStats = await prisma.pageView.groupBy({
+      by: ["os"],
+      where: { createdAt: { gte: since }, os: { not: null } },
+      _count: { os: true },
+      orderBy: { _count: { os: "desc" } },
+      take: 8,
+    });
 
-      prisma.pageView.groupBy({
-        by: ["device"],
-        where: { createdAt: { gte: since }, device: { not: null } },
-        _count: { device: true },
-        orderBy: { _count: { device: "desc" } },
-      }),
+    const deviceStats = await prisma.pageView.groupBy({
+      by: ["device"],
+      where: { createdAt: { gte: since }, device: { not: null } },
+      _count: { device: true },
+      orderBy: { _count: { device: "desc" } },
+    });
 
-      prisma.pageView.groupBy({
-        by: ["country"],
-        where: { createdAt: { gte: since }, country: { not: null } },
-        _count: { country: true },
-        orderBy: { _count: { country: "desc" } },
-        take: 10,
-      }),
+    const countryStats = await prisma.pageView.groupBy({
+      by: ["country"],
+      where: { createdAt: { gte: since }, country: { not: null } },
+      _count: { country: true },
+      orderBy: { _count: { country: "desc" } },
+      take: 10,
+    });
 
-      prisma.pageView.groupBy({
-        by: ["city"],
-        where: { createdAt: { gte: since }, city: { not: null, notIn: ["Local"] } },
-        _count: { city: true },
-        orderBy: { _count: { city: "desc" } },
-        take: 10,
-      }),
+    const cityStats = await prisma.pageView.groupBy({
+      by: ["city"],
+      where: { createdAt: { gte: since }, city: { not: null, notIn: ["Local"] } },
+      _count: { city: true },
+      orderBy: { _count: { city: "desc" } },
+      take: 10,
+    });
 
-      prisma.pageView.findMany({
-        where: { createdAt: { gte: since } },
-        orderBy: { createdAt: "desc" },
-        take: 20,
-        select: {
-          path: true,
-          browser: true,
-          os: true,
-          device: true,
-          country: true,
-          city: true,
-          ip: true,
-          createdAt: true,
-        },
-      }),
+    const recentViews = await prisma.pageView.findMany({
+      where: { createdAt: { gte: since } },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+      select: {
+        path: true,
+        browser: true,
+        os: true,
+        device: true,
+        country: true,
+        city: true,
+        ip: true,
+        createdAt: true,
+      },
+    });
 
-      prisma.$queryRaw`
-        SELECT EXTRACT(HOUR FROM "createdAt")::int as hour, COUNT(*)::int as views
-        FROM page_views
-        WHERE "createdAt" >= NOW() - INTERVAL '24 hours'
-        GROUP BY EXTRACT(HOUR FROM "createdAt")
-        ORDER BY hour
-      `,
-    ]);
+    const hourlyTraffic = await prisma.$queryRaw`
+      SELECT EXTRACT(HOUR FROM "createdAt")::int as hour, COUNT(*)::int as views
+      FROM page_views
+      WHERE "createdAt" >= NOW() - INTERVAL '24 hours'
+      GROUP BY EXTRACT(HOUR FROM "createdAt")
+      ORDER BY hour
+    `;
 
     sendSuccess(res, {
       totalViews,
-      uniqueVisitors: uniqueIps,
-      uniquePages: uniquePaths,
+      uniqueVisitors: uniqueIpRows[0]?.count ?? 0,
+      uniquePages: uniquePathRows[0]?.count ?? 0,
       topPages: topPages.map((p) => ({
         path: p.path,
         views: p._count.path,

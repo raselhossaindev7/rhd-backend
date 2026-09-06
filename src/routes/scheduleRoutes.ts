@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { authenticate, authorize } from "../middleware/auth";
+import { cache } from "../middleware/cache";
 import {
   getTopics,
   createTopic,
@@ -27,6 +28,7 @@ router.post("/generate-topics", generateTopicSuggestions);
 router.post("/generate", generatePost);
 
 // ─── Stats ───────────────────────────────────────────────
-router.get("/stats", getScheduleStats);
+// Cached 30s — same pool-stampede protection as dashboard/analytics.
+router.get("/stats", cache(30), getScheduleStats);
 
 export default router;

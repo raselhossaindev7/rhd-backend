@@ -1,12 +1,8 @@
-import { config } from "../config/env";
 import { slugify } from "../utils/helpers";
 import { findImages, extractKeywords } from "./imageFinder";
+import { aiChat, extractJsonObject } from "./aiProvider";
 
-const OLLAMA_API_KEY = config.ollamaApiKey;
-const OLLAMA_BASE_URL = "https://ollama.com";
-const OLLAMA_MODEL = "minimax-m3:cloud";
-
-interface BlogPostData {
+export interface BlogPostData {
   title: string;
   slug: string;
   category: string;
@@ -81,10 +77,6 @@ export async function generateBlogPost(
   keywords: string[] = [],
   description?: string
 ): Promise<BlogPostData> {
-  if (!OLLAMA_API_KEY) {
-    throw new Error("AI service not configured");
-  }
-
   const imageKeywords = extractKeywords(title, category);
   const images = await findImages(imageKeywords, 3);
 
@@ -124,44 +116,47 @@ IMPORTANT:
 - Ensure all JSON fields are properly formatted
 - Return ONLY the JSON object, no markdown code blocks`;
 
-  const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OLLAMA_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-      stream: false,
-    }),
-  });
+  // Generate with retries. With response_format=json_object the model
+  // returns a strict object, so bad-JSON repairs are now rare. Repair
+  // attempts regenerate from scratch WITHOUT echoing the previous broken
+  // output back (the old code re-sent 4000 chars each retry, burning
+  // ~1000 extra TPM-limited tokens per attempt and causing 429 loops).
+  const REPAIR_PROMPT = `Your previous response was not valid JSON. Return ONLY the JSON object with the exact fields requested (content, excerpt, readTime, metaTitle, metaDescription, keywords, tags, faqJson, howToSteps, speakableText). No markdown, no explanation, no code fences.`;
 
-  if (!response.ok) {
-    const err = await response.text();
-    console.error("[AI BLOG GENERATOR ERROR]", response.status, err);
-    throw new Error("AI service error");
+  const baseMessages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: prompt },
+  ] as { role: "system" | "user" | "assistant"; content: string }[];
+
+  let parsed: any = null;
+  let lastContent = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const content = await aiChat(
+      attempt === 1
+        ? baseMessages
+        : [...baseMessages, { role: "user", content: REPAIR_PROMPT }],
+      undefined,
+      // 2000-2500 words ≈ 3000-3500 tokens; cap keeps prompt+output
+      // under Groq's 8000 TPM limit even across a repair retry.
+      { jsonMode: true, maxTokens: 4096 }
+    );
+    lastContent = content;
+    try {
+      const candidate = JSON.parse(extractJsonObject(content));
+      if (!candidate || typeof candidate.content !== "string" || !candidate.content.trim()) {
+        throw new Error("Missing content field");
+      }
+      parsed = candidate;
+      break;
+    } catch {
+      console.error(
+        `[AI BLOG GENERATOR] Attempt ${attempt}/3 returned bad JSON${attempt < 3 ? ", retrying with repair prompt" : ""}`
+      );
+    }
   }
-
-  const data: any = await response.json();
-  const content = data.message?.content || "";
-
-  // Parse JSON from response
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    console.error("[AI BLOG GENERATOR] No JSON found in response:", content);
+  if (!parsed) {
+    console.error("[AI BLOG GENERATOR] No valid JSON after 3 attempts. Last response:", lastContent.slice(0, 500));
     throw new Error("Invalid AI response format");
-  }
-
-  let parsed: any;
-  try {
-    parsed = JSON.parse(jsonMatch[0]);
-  } catch (parseError) {
-    console.error("[AI BLOG GENERATOR] JSON parse error:", parseError);
-    throw new Error("Failed to parse AI response");
   }
 
   // Build the complete blog post data
@@ -179,12 +174,16 @@ IMPORTANT:
   let processedContent = parsed.content || "";
   if (images.length > 1 && !processedContent.includes("![")) {
     const paragraphs = processedContent.split("\n\n");
-    const image1 = `![${images[1]?.alt || "Illustration"}](${images[1]?.url || ""})`;
+    const mdImage = (img: { url?: string; alt?: string; credit?: string }) =>
+      img.credit
+        ? `![${img.alt || "Illustration"}](${img.url || ""} "${img.credit.replace(/"/g, "'")}")`
+        : `![${img.alt || "Illustration"}](${img.url || ""})`;
+    const image1 = mdImage({ ...images[1], alt: images[1]?.alt || "Illustration" });
     if (paragraphs.length > 3) {
       paragraphs.splice(3, 0, image1);
     }
     if (images.length > 2) {
-      const image2 = `![${images[2]?.alt || "Example"}](${images[2]?.url || ""})`;
+      const image2 = mdImage({ ...images[2], alt: images[2]?.alt || "Example" });
       if (paragraphs.length > 6) {
         paragraphs.splice(6, 0, image2);
       }

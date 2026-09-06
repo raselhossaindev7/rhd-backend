@@ -45,16 +45,19 @@ export async function getProjects(req: Request, res: Response) {
     if (category && category !== "All") where.category = category;
     if (featured === "true") where.featured = true;
 
-    const [projects, total] = await Promise.all([
-      prisma.project.findMany({
-        where,
-        include: { technologies: true, metrics: true },
-        orderBy: { order: "asc" },
-        skip,
-        take: limit,
-      }),
-      prisma.project.count({ where }),
-    ]);
+    // Sequential reads (no $transaction): each query checks a pooled
+    // connection out briefly and releases it. A $transaction batch pins
+    // one server connection on the Supabase transaction-mode pooler for
+    // the whole batch and is fragile there (10054 / "server closed the
+    // connection"). Reads don't need transactional consistency.
+    const projects = await prisma.project.findMany({
+      where,
+      include: { technologies: true, metrics: true },
+      orderBy: { order: "asc" },
+      skip,
+      take: limit,
+    });
+    const total = await prisma.project.count({ where });
 
     sendSuccess(res, {
       projects: projects.map(shapeProject),

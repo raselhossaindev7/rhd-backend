@@ -33,15 +33,18 @@ export async function getContacts(req: Request, res: Response) {
 
     const where = status ? { status: status as any } : {};
 
-    const [contacts, total] = await Promise.all([
-      prisma.contact.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take: limit,
-      }),
-      prisma.contact.count({ where }),
-    ]);
+    // Sequential reads (no $transaction): each query checks a pooled
+    // connection out briefly and releases it. A $transaction batch pins
+    // one server connection on the Supabase transaction-mode pooler for
+    // the whole batch and is fragile there (10054 / "server closed the
+    // connection"). Reads don't need transactional consistency.
+    const contacts = await prisma.contact.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
+    });
+    const total = await prisma.contact.count({ where });
 
     sendSuccess(res, {
       contacts,

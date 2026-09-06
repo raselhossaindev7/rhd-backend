@@ -1,8 +1,4 @@
-import { config } from "../config/env";
-
-const OLLAMA_API_KEY = config.ollamaApiKey;
-const OLLAMA_BASE_URL = "https://ollama.com";
-const OLLAMA_MODEL = "minimax-m3:cloud";
+import { aiChat } from "./aiProvider";
 
 const EMAIL_SYSTEM_PROMPT = `You are Rasel Hossain's AI email writer. You write professional, compelling emails for cold outreach, follow-ups, and business communication.
 
@@ -55,10 +51,6 @@ interface GeneratedEmail {
 }
 
 export async function generateEmailWithAI(request: GenerateEmailRequest): Promise<GeneratedEmail> {
-  if (!OLLAMA_API_KEY) {
-    throw new Error("AI service not configured");
-  }
-
   const typeInstructions: Record<string, string> = {
     "cold-outreach": `Write a cold outreach email to potential client.
 - Goal: Start a conversation, not sell immediately
@@ -113,30 +105,10 @@ IMPORTANT:
 - Subject line should be 40-60 characters
 - Make it personal and specific to the recipient`;
 
-  const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OLLAMA_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: EMAIL_SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-      stream: false,
-    }),
-  });
-
-  if (!response.ok) {
-    const err = await response.text();
-    console.error("[AI EMAIL GENERATOR ERROR]", response.status, err);
-    throw new Error("AI service error");
-  }
-
-  const data: any = await response.json();
-  const content = data.message?.content || "";
+  const content = await aiChat([
+    { role: "system", content: EMAIL_SYSTEM_PROMPT },
+    { role: "user", content: prompt },
+  ]);
 
   // Parse JSON from response
   const jsonMatch = content.match(/\{[\s\S]*\}/);
@@ -239,10 +211,6 @@ export async function generateSubjectLines(
   recipientCompany: string,
   purpose: string
 ): Promise<string[]> {
-  if (!OLLAMA_API_KEY) {
-    throw new Error("AI service not configured");
-  }
-
   const prompt = `Generate 5 compelling email subject lines for a cold outreach email.
 
 RECIPIENT: ${recipientName} at ${recipientCompany}
@@ -258,28 +226,10 @@ RULES:
 Return ONLY a JSON array of strings:
 ["Subject 1", "Subject 2", "Subject 3", "Subject 4", "Subject 5"]`;
 
-  const response = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OLLAMA_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: OLLAMA_MODEL,
-      messages: [
-        { role: "system", content: EMAIL_SYSTEM_PROMPT },
-        { role: "user", content: prompt },
-      ],
-      stream: false,
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error("AI service error");
-  }
-
-  const data: any = await response.json();
-  const content = data.message?.content || "[]";
+  const content = await aiChat([
+    { role: "system", content: EMAIL_SYSTEM_PROMPT },
+    { role: "user", content: prompt },
+  ]);
 
   const jsonMatch = content.match(/\[[\s\S]*\]/);
   if (!jsonMatch) {

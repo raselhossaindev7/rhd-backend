@@ -37,14 +37,20 @@ router.use("/settings", settingsRoutes);
 router.use("/schedule", scheduleRoutes);
 router.use("/inbox", inboxRoutes);
 
-// Health check
+// Health check (DB probe has a hard 2.5s timeout — same as /health in
+// server.ts. Without it, a saturated pool makes /api/health hang for
+// pool_timeout seconds, consuming yet another pool slot and making the
+// outage look (and get) worse. Health must fail fast, never hang.)
 router.get("/health", async (_req, res) => {
-  let dbStatus: "connected" | "disconnected" = "disconnected";
+  let dbStatus: "connected" | "degraded" | "disconnected" = "disconnected";
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await Promise.race([
+      prisma.$queryRaw`SELECT 1`,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("db-probe-timeout")), 2500)),
+    ]);
     dbStatus = "connected";
-  } catch {
-    dbStatus = "disconnected";
+  } catch (err: any) {
+    dbStatus = err?.message === "db-probe-timeout" ? "degraded" : "disconnected";
   }
 
   res.json({

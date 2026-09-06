@@ -4,55 +4,43 @@ import { sendSuccess, sendError } from "../utils/helpers";
 
 export async function getDashboardStats(_req: Request, res: Response) {
   try {
-    const [
-      totalProjects,
-      featuredProjects,
-      totalPosts,
-      publishedPosts,
-      totalServices,
-      activeServices,
-      totalContacts,
-      newContacts,
-      readContacts,
-      archivedContacts,
-      activeSubscribers,
-      totalSubscribers,
-      totalPageViews,
-      projectCategories,
-      recentContacts,
-      recentProjects,
-      recentPosts,
-    ] = await Promise.all([
-      prisma.project.count(),
-      prisma.project.count({ where: { featured: true } }),
-      prisma.post.count(),
-      prisma.post.count({ where: { published: true } }),
-      prisma.service.count(),
-      prisma.service.count({ where: { active: true } }),
-      prisma.contact.count(),
-      prisma.contact.count({ where: { status: "NEW" } }),
-      prisma.contact.count({ where: { status: "READ" } }),
-      prisma.contact.count({ where: { status: "ARCHIVED" } }),
-      prisma.subscriber.count({ where: { active: true } }),
-      prisma.subscriber.count(),
-      prisma.pageView.count(),
-      prisma.project.groupBy({ by: ["category"], _count: { category: true } }),
-      prisma.contact.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 5,
-        select: { id: true, name: true, email: true, type: true, status: true, createdAt: true },
-      }),
-      prisma.project.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 5,
-        select: { id: true, title: true, slug: true, category: true, featured: true, createdAt: true },
-      }),
-      prisma.post.findMany({
-        orderBy: { createdAt: "desc" },
-        take: 5,
-        select: { id: true, title: true, slug: true, category: true, published: true, createdAt: true },
-      }),
-    ]);
+    // NOTE: sequential reads, NOT prisma.$transaction([...]) and NOT
+    // Promise.all. Each query checks a pooled connection out briefly and
+    // releases it. A $transaction batch pins one server connection on the
+    // Supabase transaction-mode pooler for all 17 queries; with ~10
+    // concurrent admin requests on a connection_limit=10 pool that
+    // starved every other endpoint (pool-timeout → retry storm → P1001).
+    // Slight staleness between counts is fine for a stats endpoint.
+    // (This route is also cached 30s — see dashboardRoutes.)
+    const totalProjects = await prisma.project.count();
+    const featuredProjects = await prisma.project.count({ where: { featured: true } });
+    const totalPosts = await prisma.post.count();
+    const publishedPosts = await prisma.post.count({ where: { published: true } });
+    const totalServices = await prisma.service.count();
+    const activeServices = await prisma.service.count({ where: { active: true } });
+    const totalContacts = await prisma.contact.count();
+    const newContacts = await prisma.contact.count({ where: { status: "NEW" } });
+    const readContacts = await prisma.contact.count({ where: { status: "READ" } });
+    const archivedContacts = await prisma.contact.count({ where: { status: "ARCHIVED" } });
+    const activeSubscribers = await prisma.subscriber.count({ where: { active: true } });
+    const totalSubscribers = await prisma.subscriber.count();
+    const totalPageViews = await prisma.pageView.count();
+    const projectCategories = await prisma.project.groupBy({ by: ["category"], _count: { category: true } });
+    const recentContacts = await prisma.contact.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { id: true, name: true, email: true, type: true, status: true, createdAt: true },
+    });
+    const recentProjects = await prisma.project.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { id: true, title: true, slug: true, category: true, featured: true, createdAt: true },
+    });
+    const recentPosts = await prisma.post.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: { id: true, title: true, slug: true, category: true, published: true, createdAt: true },
+    });
 
     const categoryBreakdown = (projectCategories as { category: string | null; _count: { category: number } }[]).map((c) => ({
       name: c.category || "Uncategorized",

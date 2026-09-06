@@ -42,16 +42,19 @@ export async function getPosts(req: Request, res: Response) {
     if (published === "true") where.published = true;
     if (tag) where.tags = { some: { name: tag } };
 
-    const [posts, total] = await Promise.all([
-      prisma.post.findMany({
-        where,
-        include: { tags: true },
-        orderBy: { date: "desc" },
-        skip,
-        take: limit,
-      }),
-      prisma.post.count({ where }),
-    ]);
+    // Sequential reads (no $transaction): each query checks a pooled
+    // connection out briefly and releases it. A $transaction batch pins
+    // one server connection on the Supabase transaction-mode pooler for
+    // the whole batch and is fragile there (10054 / "server closed the
+    // connection"). Reads don't need transactional consistency.
+    const posts = await prisma.post.findMany({
+      where,
+      include: { tags: true },
+      orderBy: { date: "desc" },
+      skip,
+      take: limit,
+    });
+    const total = await prisma.post.count({ where });
 
     sendSuccess(res, {
       posts: posts.map(shapePost),

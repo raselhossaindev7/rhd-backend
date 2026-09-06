@@ -1,65 +1,158 @@
+// ─── Relevant free images for AI-generated blog posts ─────
+// Priority cascade (all free):
+//   1. Pexels      — best relevance + reliable CDN (needs free key)
+//   2. Openverse   — CC images, keyword search, NO key needed
+//   3. Pollinations— AI-generated from the post topic, always related, NO key
+//   4. Picsum      — last-resort filler (random content)
+
 interface ImageResult {
   url: string;
   alt: string;
   source: string;
+  credit?: string;
 }
 
-const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || "";
+const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
+const FETCH_TIMEOUT_MS = 15000;
+
+async function fetchJson(url: string, headers: Record<string, string> = {}): Promise<any> {
+  const res = await fetch(url, {
+    headers,
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// Prefer permissive licenses for blog use
+function licenseRank(license: string | undefined): number {
+  const l = (license || "").toLowerCase();
+  if (l === "cc0" || l === "pdm") return 0;
+  if (l === "by") return 1;
+  if (l === "by-sa") return 2;
+  return 3;
+}
+
+function stableSeed(text: string): number {
+  let h = 0;
+  for (let i = 0; i < text.length; i++) {
+    h = (h * 31 + text.charCodeAt(i)) >>> 0;
+  }
+  return h % 100000;
+}
+
+async function searchPexels(query: string, count: number): Promise<ImageResult[]> {
+  const data = await fetchJson(
+    `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${count}&orientation=landscape`,
+    { Authorization: PEXELS_API_KEY }
+  );
+  return (data.photos || []).map((p: any) => ({
+    url: p.src?.large2x || p.src?.large || p.src?.original || "",
+    alt: p.alt || query,
+    source: "pexels",
+    credit: p.photographer ? `Photo by ${p.photographer} on Pexels` : undefined,
+  }));
+}
+
+async function searchOpenverse(query: string, count: number): Promise<ImageResult[]> {
+  const data = await fetchJson(
+    `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=${count * 2}&filter_dead=false&page=1`
+  );
+  const results: any[] = [...(data.results || [])].sort(
+    (a, b) => licenseRank(a.license) - licenseRank(b.license)
+  );
+  return results.map((r: any) => ({
+    url: r.url || "",
+    alt: r.title || query,
+    source: "openverse",
+    credit: r.creator
+      ? `${r.title || "Image"} by ${r.creator}${r.license ? ` (${String(r.license).toUpperCase()})` : ""}`
+      : undefined,
+  }));
+}
+
+function aiGeneratedImages(query: string, count: number, offset: number): ImageResult[] {
+  // Prompt-engineered from the post topic so the visual is always related
+  const prompt = `${query} themed professional digital illustration, modern tech blog header style, vibrant, no text`;
+  const images: ImageResult[] = [];
+  for (let i = 0; i < count; i++) {
+    images.push({
+      url: `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1200&height=630&nologo=true&seed=${stableSeed(query) + offset + i}`,
+      alt: query,
+      source: "pollinations",
+    });
+  }
+  return images;
+}
+
+function placeholderImages(query: string, count: number, offset: number): ImageResult[] {
+  const seed = query.replace(/\s+/g, "-").toLowerCase();
+  const images: ImageResult[] = [];
+  for (let i = 0; i < count; i++) {
+    images.push({
+      url: `https://picsum.photos/seed/${seed}-${offset + i}/1200/630`,
+      alt: `${query} - Image ${offset + i + 1}`,
+      source: "picsum",
+    });
+  }
+  return images;
+}
 
 export async function findImages(
   query: string,
   count: number = 3
 ): Promise<ImageResult[]> {
-  try {
-    if (UNSPLASH_ACCESS_KEY) {
-      return await searchUnsplash(query, count);
+  const found: ImageResult[] = [];
+  const seen = new Set<string>();
+  const push = (img: ImageResult) => {
+    if (found.length >= count || !img.url || seen.has(img.url)) return;
+    seen.add(img.url);
+    found.push(img);
+  };
+
+  // Pexels + Openverse in parallel (Pexels first for relevance).
+  // Openverse gets relaxed query variants too (full → 2 words → 1 word),
+  // because its index often misses long 3-word queries.
+  const words = query.split(/\s+/).filter(Boolean);
+  const variants = [
+    query,
+    words.slice(0, 2).join(" "),
+    words[0] || "",
+  ].filter((v, i, arr) => v && arr.indexOf(v) === i);
+
+  const tasks: Promise<ImageResult[]>[] = [];
+  if (PEXELS_API_KEY) tasks.push(searchPexels(query, count));
+  for (const v of variants) tasks.push(searchOpenverse(v, count));
+  const settled = await Promise.allSettled(tasks);
+
+  // Pexels results first (if key configured, it's tasks[0])
+  let openverseResults: ImageResult[] = [];
+  for (const s of settled) {
+    if (s.status === "fulfilled") {
+      // Identify source by first item (pexels only runs when key exists)
+      if (PEXELS_API_KEY && s.value.length && s.value[0].source === "pexels") {
+        s.value.forEach(push);
+      } else {
+        openverseResults = openverseResults.concat(s.value);
+      }
     }
-    // Fallback to placeholder images
-    return getPlaceholderImages(query, count);
-  } catch (error) {
-    console.error("[IMAGE FINDER] Error:", error);
-    return getPlaceholderImages(query, count);
   }
-}
+  if (settled.some((s) => s.status === "rejected")) {
+    console.error("[IMAGE FINDER] A stock source failed, using next source");
+  }
+  openverseResults.forEach(push);
 
-async function searchUnsplash(query: string, count: number): Promise<ImageResult[]> {
-  const response = await fetch(
-    `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=${count}&orientation=landscape`,
-    {
-      headers: {
-        Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
-      },
-    }
-  );
-
-  if (!response.ok) {
-    throw new Error("Unsplash API error");
+  // AI-generated topical images fill remaining slots (always related)
+  if (found.length < count) {
+    aiGeneratedImages(query, count - found.length, found.length).forEach(push);
   }
 
-  const data: any = await response.json();
-  const results = data.results || [];
-
-  return results.slice(0, count).map((photo: any) => ({
-    url: photo.urls?.regular || photo.urls?.small || "",
-    alt: photo.alt_description || query,
-    source: "unsplash",
-  }));
-}
-
-function getPlaceholderImages(query: string, count: number): ImageResult[] {
-  // Use picsum.photos as a fallback - these are real stock photos
-  const images: ImageResult[] = [];
-  const seed = query.replace(/\s+/g, "-").toLowerCase();
-
-  for (let i = 0; i < count; i++) {
-    images.push({
-      url: `https://picsum.photos/seed/${seed}-${i}/1200/630`,
-      alt: `${query} - Image ${i + 1}`,
-      source: "picsum",
-    });
+  // Absolute last resort
+  if (found.length < count) {
+    placeholderImages(query, count - found.length, found.length).forEach(push);
   }
 
-  return images;
+  return found.slice(0, count);
 }
 
 export function extractKeywords(title: string, category: string): string {

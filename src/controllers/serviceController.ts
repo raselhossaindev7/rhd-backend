@@ -20,10 +20,13 @@ export const getServices = async (req: Request, res: Response) => {
     // Cap page size so a single request can never dump the whole table
     const take = Math.min(limit ? parseInt(limit as string) || 50 : 50, 100);
 
-    const [services, total] = await Promise.all([
-      prisma.service.findMany({ where, orderBy, take }),
-      prisma.service.count({ where }),
-    ]);
+    // Sequential reads (no $transaction): each query checks a pooled
+    // connection out briefly and releases it. A $transaction batch pins
+    // one server connection on the Supabase transaction-mode pooler for
+    // the whole batch and is fragile there (10054 / "server closed the
+    // connection"). Reads don't need transactional consistency.
+    const services = await prisma.service.findMany({ where, orderBy, take });
+    const total = await prisma.service.count({ where });
 
     const shaped = services.map(shapeService);
 

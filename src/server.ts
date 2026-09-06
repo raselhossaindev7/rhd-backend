@@ -100,13 +100,20 @@ app.use(cookieParser());
 app.use(compression());
 
 // ─── Health Check (with DB status) ──────────────────────────
+// NOTE: the DB probe has a hard 2.5s timeout. Without it, a saturated
+// connection pool made /health itself hang for 20s+ (pool_timeout),
+// which made the whole backend LOOK down and was the "2.4s health"
+// symptom. Health must fail fast and report degraded, never hang.
 app.get("/health", async (_req, res) => {
-  let dbStatus: "connected" | "disconnected" = "disconnected";
+  let dbStatus: "connected" | "degraded" | "disconnected" = "disconnected";
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    await Promise.race([
+      prisma.$queryRaw`SELECT 1`,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("db-probe-timeout")), 2500)),
+    ]);
     dbStatus = "connected";
-  } catch {
-    dbStatus = "disconnected";
+  } catch (err: any) {
+    dbStatus = err?.message === "db-probe-timeout" ? "degraded" : "disconnected";
   }
 
   res.json({

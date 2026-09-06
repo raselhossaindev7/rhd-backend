@@ -6,6 +6,16 @@ import { AuthRequest } from "../types";
 import { config } from "../config/env";
 import { r2Client } from "../config/r2";
 import { ListObjectsV2Command } from "@aws-sdk/client-s3";
+import {
+  AI_PROVIDERS,
+  AI_PROVIDER_DEFAULTS,
+  AiProviderName,
+  getAiConfig,
+  getAiConfigPublic,
+  listProviderModels,
+  saveAiConfig,
+  testAiConnection,
+} from "../services/aiProvider";
 
 // ─── Get Profile ──────────────────────────────────────────
 
@@ -101,27 +111,126 @@ export async function changePassword(req: AuthRequest, res: Response) {
   }
 }
 
+// ─── AI Config ────────────────────────────────────────────
+
+export async function getAiSettings(_req: AuthRequest, res: Response) {
+  try {
+    const cfg = await getAiConfigPublic();
+    sendSuccess(res, {
+      ...cfg,
+      providers: AI_PROVIDERS.map((p) => ({
+        id: p,
+        defaultModel: AI_PROVIDER_DEFAULTS[p].defaultModel,
+        suggestedModels: AI_PROVIDER_DEFAULTS[p].suggestedModels,
+        baseUrl: AI_PROVIDER_DEFAULTS[p].baseUrl,
+        keyLabel: AI_PROVIDER_DEFAULTS[p].keyLabel,
+        keyHint: AI_PROVIDER_DEFAULTS[p].keyHint,
+      })),
+    });
+  } catch (error) {
+    sendError(res, error as Error);
+  }
+}
+
+export async function updateAiSettings(req: AuthRequest, res: Response) {
+  try {
+    const { provider, apiKey, model, baseUrl } = req.body as {
+      provider: AiProviderName;
+      apiKey?: string;
+      model?: string;
+      baseUrl?: string;
+    };
+
+    if (!provider || !AI_PROVIDERS.includes(provider)) {
+      throw new ApiError(400, `Invalid provider. Must be one of: ${AI_PROVIDERS.join(", ")}`);
+    }
+
+    // Empty apiKey means "keep existing" only if a key already exists for same provider.
+    // Otherwise require a key.
+    let finalKey = (apiKey ?? "").trim();
+    if (!finalKey) {
+      const current = await getAiConfig();
+      if (current.provider === provider && current.apiKey) {
+        finalKey = current.apiKey;
+      } else {
+        throw new ApiError(400, "API key is required");
+      }
+    }
+
+    const saved = await saveAiConfig({ provider, apiKey: finalKey, model, baseUrl });
+    const pub = await getAiConfigPublic();
+    sendSuccess(res, { ...pub, saved: true });
+  } catch (error) {
+    sendError(res, error as Error);
+  }
+}
+
+export async function listAiModels(req: AuthRequest, res: Response) {
+  try {
+    const { provider, apiKey, model, baseUrl } = req.body as {
+      provider: AiProviderName;
+      apiKey?: string;
+      model?: string;
+      baseUrl?: string;
+    };
+
+    if (!provider || !AI_PROVIDERS.includes(provider)) {
+      throw new ApiError(400, `Invalid provider. Must be one of: ${AI_PROVIDERS.join(", ")}`);
+    }
+
+    const result = await listProviderModels({ provider, apiKey, model, baseUrl });
+    sendSuccess(res, result);
+  } catch (error) {
+    sendError(res, error as Error);
+  }
+}
+
+export async function testAiSettings(req: AuthRequest, res: Response) {
+  try {
+    const { provider, apiKey, model, baseUrl } = req.body as {
+      provider: AiProviderName;
+      apiKey?: string;
+      model?: string;
+      baseUrl?: string;
+    };
+
+    if (!provider || !AI_PROVIDERS.includes(provider)) {
+      throw new ApiError(400, `Invalid provider. Must be one of: ${AI_PROVIDERS.join(", ")}`);
+    }
+
+    // Allow testing saved config when apiKey omitted
+    let finalKey = (apiKey ?? "").trim();
+    let finalModel = (model ?? "").trim();
+    let finalBase = (baseUrl ?? "").trim();
+    if (!finalKey || !finalModel) {
+      const current = await getAiConfig();
+      if (!finalKey) finalKey = current.apiKey;
+      if (!finalModel) finalModel = current.model;
+      if (!finalBase) finalBase = current.baseUrl;
+    }
+
+    const result = await testAiConnection({ provider, apiKey: finalKey, model: finalModel, baseUrl: finalBase });
+    sendSuccess(res, result);
+  } catch (error) {
+    // Surface the real provider message (e.g. 403 reason) instead of generic 500
+    if (error instanceof ApiError) return sendError(res, error);
+    return sendError(res, new ApiError(400, error instanceof Error ? error.message : "Connection test failed"));
+  }
+}
+
 // ─── System Info ──────────────────────────────────────────
 
 export async function getSystemInfo(_req: AuthRequest, res: Response) {
   try {
-    const [
-      projectCount,
-      postCount,
-      serviceCount,
-      contactCount,
-      subscriberCount,
-      messageCount,
-      userCount,
-    ] = await Promise.all([
-      prisma.project.count(),
-      prisma.post.count(),
-      prisma.service.count(),
-      prisma.contact.count(),
-      prisma.subscriber.count(),
-      prisma.message.count(),
-      prisma.user.count(),
-    ]);
+    // Sequential counts (no $transaction — see db.ts: a batch pins one
+    // server connection on the Supabase transaction-mode pooler).
+    const projectCount = await prisma.project.count();
+    const postCount = await prisma.post.count();
+    const serviceCount = await prisma.service.count();
+    const contactCount = await prisma.contact.count();
+    const subscriberCount = await prisma.subscriber.count();
+    const messageCount = await prisma.message.count();
+    const userCount = await prisma.user.count();
 
     // R2 storage check
     let r2Status = "disconnected";
@@ -140,25 +249,14 @@ export async function getSystemInfo(_req: AuthRequest, res: Response) {
       r2Status = "error";
     }
 
-    // Ollama API check
-    let ollamaStatus = "disconnected";
+    // Active AI provider check (uses saved config, falls back to env)
+    const aiCfg = await getAiConfig();
+    let aiStatus = "disconnected";
     try {
-      const res = await fetch("https://ollama.com/api/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.ollamaApiKey}`,
-        },
-        body: JSON.stringify({
-          model: "minimax-m3:cloud",
-          messages: [{ role: "user", content: "hi" }],
-          stream: false,
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-      ollamaStatus = res.ok ? "connected" : "error";
+      const probe = await testAiConnection(aiCfg);
+      aiStatus = probe.ok ? "connected" : "error";
     } catch {
-      ollamaStatus = "error";
+      aiStatus = aiCfg.apiKey ? "error" : "disconnected";
     }
 
     sendSuccess(res, {
@@ -179,8 +277,12 @@ export async function getSystemInfo(_req: AuthRequest, res: Response) {
         publicUrl: config.r2.publicUrl,
       },
       ai: {
-        ollama: ollamaStatus,
-        model: "minimax-m3:cloud",
+        provider: aiCfg.provider,
+        status: aiStatus,
+        model: aiCfg.model,
+        configured: aiCfg.apiKey.length > 0,
+        // backward-compat for older admin builds
+        ollama: aiStatus,
       },
       server: {
         nodeEnv: config.nodeEnv,
