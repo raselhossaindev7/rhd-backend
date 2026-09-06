@@ -107,7 +107,7 @@ export async function generateBlogPost(
   description?: string
 ): Promise<BlogPostData> {
   const imageKeywords = extractKeywords(title, category);
-  const images = await findImages(imageKeywords, 3);
+  const images = await findImages(imageKeywords, 3, category);
 
   // ── Two-step generation ──────────────────────────────────
   // The old single-call design stuffed 1200+ words of Markdown PLUS all

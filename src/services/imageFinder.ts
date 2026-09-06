@@ -1,9 +1,11 @@
 // ─── Relevant free images for AI-generated blog posts ─────
-// Priority cascade (all free):
+// Priority cascade (all free, all tech-related — coding / programming /
+// computer / AI; NEVER random filler):
 //   1. Pexels      — best relevance + reliable CDN (needs free key)
-//   2. Openverse   — CC images, keyword search, NO key needed
+//   2. Openverse   — CC images, tech-anchored queries, NO key needed
 //   3. Pollinations— AI-generated from the post topic, always related, NO key
-//   4. Picsum      — last-resort filler (random content)
+// Picsum was deliberately removed: random photos (landscapes, objects)
+// break the tech look of the blog.
 
 interface ImageResult {
   url: string;
@@ -54,9 +56,31 @@ async function searchPexels(query: string, count: number): Promise<ImageResult[]
   }));
 }
 
+// Every scheduled post is about tech — map its category to a stock-photo
+// query that can ONLY return coding/computer/AI imagery. Used as the
+// fallback query so a generic title word (e.g. "building") can never
+// resolve to buildings/architecture photos.
+const CATEGORY_TECH_QUERY: Record<string, string> = {
+  "AI & Automation": "artificial intelligence robot technology",
+  DevOps: "server code deployment technology",
+  "Web Development": "programming code computer",
+  "Full Stack": "programming code computer",
+  Tutorial: "programming code computer screen",
+  "Mobile Apps": "smartphone programming code",
+  "E-commerce": "laptop online shopping technology",
+  "System Design": "server network technology",
+  Career: "software developer office computer",
+  "Case Study": "programmers office computer teamwork",
+};
+const DEFAULT_TECH_QUERY = "programming code computer";
+
+export function techQueryFor(category: string): string {
+  return CATEGORY_TECH_QUERY[category] || DEFAULT_TECH_QUERY;
+}
+
 async function searchOpenverse(query: string, count: number): Promise<ImageResult[]> {
   const data = await fetchJson(
-    `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=${count * 2}&filter_dead=false&page=1`
+    `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=${count * 2}&filter_dead=true&page=1&license_type=all`
   );
   const results: any[] = [...(data.results || [])].sort(
     (a, b) => licenseRank(a.license) - licenseRank(b.license)
@@ -72,8 +96,9 @@ async function searchOpenverse(query: string, count: number): Promise<ImageResul
 }
 
 function aiGeneratedImages(query: string, count: number, offset: number): ImageResult[] {
-  // Prompt-engineered from the post topic so the visual is always related
-  const prompt = `${query} themed professional digital illustration, modern tech blog header style, vibrant, no text`;
+  // Prompt-engineered from the post topic + hard tech anchoring, so the
+  // visual always shows coding / computers / AI — never generic subjects.
+  const prompt = `${query}, software programming theme, developer workspace with computer code on screen, professional digital illustration, modern tech blog header style, vibrant, no text, no watermark`;
   const images: ImageResult[] = [];
   for (let i = 0; i < count; i++) {
     images.push({
@@ -85,43 +110,36 @@ function aiGeneratedImages(query: string, count: number, offset: number): ImageR
   return images;
 }
 
-function placeholderImages(query: string, count: number, offset: number): ImageResult[] {
-  const seed = query.replace(/\s+/g, "-").toLowerCase();
-  const images: ImageResult[] = [];
-  for (let i = 0; i < count; i++) {
-    images.push({
-      url: `https://picsum.photos/seed/${seed}-${offset + i}/1200/630`,
-      alt: `${query} - Image ${offset + i + 1}`,
-      source: "picsum",
-    });
-  }
-  return images;
-}
-
 export async function findImages(
   query: string,
-  count: number = 3
+  count: number = 3,
+  category: string = ""
 ): Promise<ImageResult[]> {
   const found: ImageResult[] = [];
   const seen = new Set<string>();
   const push = (img: ImageResult) => {
     if (found.length >= count || !img.url || seen.has(img.url)) return;
+    // Skip non-image URLs (Openverse sometimes returns page links)
+    if (!/^https:\/\//.test(img.url)) return;
     seen.add(img.url);
     found.push(img);
   };
 
   // Pexels + Openverse in parallel (Pexels first for relevance).
-  // Openverse gets relaxed query variants too (full → 2 words → 1 word),
-  // because its index often misses long 3-word queries.
+  // Query variants relax full → 2 words → CATEGORY tech query, because
+  // Openverse often misses long queries. The bare first-word fallback is
+  // deliberately GONE: "building progressive web" → "building" returned
+  // architecture photos. The category tech query guarantees
+  // coding/computer/AI imagery instead.
   const words = query.split(/\s+/).filter(Boolean);
   const variants = [
     query,
     words.slice(0, 2).join(" "),
-    words[0] || "",
+    techQueryFor(category),
   ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
   const tasks: Promise<ImageResult[]>[] = [];
-  if (PEXELS_API_KEY) tasks.push(searchPexels(query, count));
+  if (PEXELS_API_KEY) tasks.push(searchPexels(`${query} programming`, count));
   for (const v of variants) tasks.push(searchOpenverse(v, count));
   const settled = await Promise.allSettled(tasks);
 
@@ -142,14 +160,10 @@ export async function findImages(
   }
   openverseResults.forEach(push);
 
-  // AI-generated topical images fill remaining slots (always related)
+  // AI-generated topical images fill ALL remaining slots (always related,
+  // free, no key). This is also the last resort — never random filler.
   if (found.length < count) {
     aiGeneratedImages(query, count - found.length, found.length).forEach(push);
-  }
-
-  // Absolute last resort
-  if (found.length < count) {
-    placeholderImages(query, count - found.length, found.length).forEach(push);
   }
 
   return found.slice(0, count);
