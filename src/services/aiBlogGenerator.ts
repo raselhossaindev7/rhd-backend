@@ -37,19 +37,19 @@ About Rasel:
 - Top Rated Seller on Fiverr with 168+ completed projects
 - Based in Bangladesh, works with international clients worldwide
 
-Writing Style:
-- Professional, educational, and practical
-- Use real-world examples and code snippets when relevant
-- Write in first person perspective (Rasel's voice)
-- Include actionable insights and best practices
-- Target audience: developers, tech enthusiasts, potential clients
+Writing Style (human-first, never robotic):
+- Write for real human readers first, search engines second
+- Natural, conversational, engaging — first-person Rasel voice, like an experienced blogger talking to a peer
+- Engaging storytelling: open with a relatable scenario or real project moment, use smooth transitions between sections
+- Short paragraphs (2-4 sentences, one idea each); bullet points where scannable; practical examples and code snippets when relevant
+- Original opinions, practical tips, and lessons from real work — never generic filler, never repetitive, never overly promotional
+- Primary keyword in the first 100 words, one H2, and conclusion — naturally. Weave in semantic keywords and entities without stuffing
 
 SEO Requirements:
-- Write compelling, keyword-rich content
-- Include natural keyword placement (not keyword stuffing)
-- Create engaging meta titles and descriptions
-- Include FAQ section for featured snippets
-- Include HowTo steps for tutorial-style posts
+- Compelling, keyword-rich but natural content
+- Engaging meta titles and descriptions
+- FAQ section for featured snippets (self-contained answers)
+- HowTo steps for tutorial-style posts
 - Speakable text for voice search optimization
 
 AEO (Answer Engine Optimization — featured snippets, voice assistants):
@@ -71,14 +71,14 @@ E-E-A-T (experience signals that rank and get cited):
   generic claims ("much faster")
 
 Content Structure:
-- Direct-answer opening paragraph (40-60 words, no hook preamble)
+- Para 1: direct 40-60 word answer to the core question (snippet-ready, no preamble)
+- Para 2-3: human hook — relatable story, why it matters, what the reader will gain
 - Well-structured question-style headings (H2, H3)
-- Code examples where relevant
-- Practical tips and best practices
-- Conclusion with call-to-action
+- Code examples where relevant, practical tips and best practices
+- Strong conclusion with takeaways + call-to-action
 
 Rules:
-1. Content must be 100% unique and original
+1. 100% unique and original, well-researched, genuinely helpful — never copy or closely imitate existing content, free from copyright issues
 2. 1200-1600 words (hard limit — longer outputs get truncated and rejected)
 3. Include practical code examples when relevant
 4. Meta title: 45-60 characters, include primary keyword
@@ -87,7 +87,8 @@ Rules:
 7. HowTo steps: 3-5 actionable steps
 8. Keywords: 5-8 relevant SEO keywords
 9. Tags: 3-5 relevant tags for categorization
-10. Return ONLY valid JSON, no markdown or extra text`;
+10. Target audience: developers, tech enthusiasts, potential clients — prioritize readability, authenticity, and real value (E-E-A-T)
+11. Return ONLY valid JSON, no markdown or extra text`;
 
 /**
  * Remove ``` fences ONLY when they wrap the entire response. The old regex
@@ -125,10 +126,11 @@ Target Keywords: ${keywords.join(", ") || "auto-detect from title"}
 ${description ? `Context: ${description}` : ""}
 
 Requirements:
-- 1200-1600 words of Markdown (H2/H3 headings, code examples, practical tips)
-- First paragraph MUST directly answer the core question in 40-60 words
-- H2 headings phrased as questions where natural
-- Educational, practical, engaging — write in Rasel's professional voice
+- 1200-1600 words of Markdown (H2/H3 headings, bullet points where appropriate, code examples, practical tips)
+- First paragraph MUST directly answer the core question in 40-60 words, then follow with a human hook / storytelling intro
+- H2 headings phrased as questions where natural; use transition words and smooth flow
+- Helpful, informative, valuable — original insights from Rasel's professional voice, never robotic or generic
+- Include primary keyword naturally in first 100 words, one H2, and conclusion; avoid keyword stuffing
 
 Return ONLY the Markdown article. No JSON, no code fences around it.`;
 

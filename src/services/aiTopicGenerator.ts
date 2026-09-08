@@ -39,9 +39,9 @@ Blog Focus Areas:
 
 Rules:
 1. Generate UNIQUE topics that haven't been covered before
-2. Focus on trending tech topics in 2026
-3. Include practical, hands-on content ideas
-4. Target keywords should have good search volume
+2. Focus on trending tech topics in 2026 with high-potential, search-intent-matched keywords (favor practical problems readers actually Google)
+3. Each topic must promise genuine reader value — helpful, informative, actionable angle, not clickbait
+4. Target keywords should have good search volume and ranking potential (3-5 specific, non-generic phrases)
 5. Categories must be one of: ${BLOG_CATEGORIES.join(", ")}
 6. Return ONLY valid JSON array, no markdown or extra text
 7. Each topic must have: title, category, keywords (3-5), description (1-2 sentences)`;
