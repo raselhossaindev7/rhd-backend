@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { trackPageView, getAnalytics } from "../controllers/analyticsController";
+import { trackPageView, getAnalytics, getBlogAnalytics } from "../controllers/analyticsController";
 import { authenticate, authorize } from "../middleware/auth";
 import { cache } from "../middleware/cache";
 import { validate } from "../middleware/validate";
@@ -13,6 +13,10 @@ const trackSchema = z.object({
 
 // Public - track page views
 router.post("/track", validate(trackSchema), trackPageView);
+
+// Protected (admin) - blog-only analytics (per-post totals + daily series).
+// Registered before "/" — additive only, existing routes untouched.
+router.get("/blog-views", authenticate, authorize(["ADMIN"]), cache(60), getBlogAnalytics);
 
 // Protected (admin) - view analytics
 // 12 heavy aggregates, polled every 30s by admin — cache 30s so polling

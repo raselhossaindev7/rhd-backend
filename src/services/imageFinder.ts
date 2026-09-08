@@ -3,7 +3,9 @@
 // computer / AI; NEVER random filler):
 //   1. Pexels      — best relevance + reliable CDN (needs free key)
 //   2. Openverse   — CC images, tech-anchored queries, NO key needed
-//   3. Pollinations— AI-generated from the post topic, always related, NO key
+//   3. Wikimedia   — Commons API, fully open-licensed, NO key needed
+//   4. LoremFlickr — keyword-based photos, NO key needed
+//   5. Pollinations— AI-generated from the post topic, always related, NO key
 // Picsum was deliberately removed: random photos (landscapes, objects)
 // break the tech look of the blog.
 
@@ -43,9 +45,32 @@ function stableSeed(text: string): number {
   return h % 100000;
 }
 
+// Random result page per call so back-to-back posts with the same query
+// (e.g. the same category tech query) don't all get page-1's top photos.
+function randomPage(max: number = 5): number {
+  return 1 + Math.floor(Math.random() * max);
+}
+
+/** Normalize a URL for reuse comparison (ignore volatile query params). */
+export function normalizeImageUrl(url: string): string {
+  try {
+    const u = new URL(String(url || ""));
+    // Pollinations embeds the seed in params — same seed = same picture,
+    // different cache-busters must still count as reuse.
+    if (u.hostname.includes("pollinations.ai")) {
+      return `${u.origin}${u.pathname}?seed=${u.searchParams.get("seed") || ""}`;
+    }
+    u.search = "";
+    u.hash = "";
+    return u.toString().replace(/\/+$/, "");
+  } catch {
+    return String(url || "").split("?")[0].replace(/\/+$/, "");
+  }
+}
+
 async function searchPexels(query: string, count: number): Promise<ImageResult[]> {
   const data = await fetchJson(
-    `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${count}&orientation=landscape`,
+    `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=${count}&page=${randomPage()}&orientation=landscape`,
     { Authorization: PEXELS_API_KEY }
   );
   return (data.photos || []).map((p: any) => ({
@@ -80,7 +105,7 @@ export function techQueryFor(category: string): string {
 
 async function searchOpenverse(query: string, count: number): Promise<ImageResult[]> {
   const data = await fetchJson(
-    `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=${count * 2}&filter_dead=true&page=1&license_type=all`
+    `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=${count * 2}&filter_dead=true&page=${randomPage()}&license_type=all`
   );
   const results: any[] = [...(data.results || [])].sort(
     (a, b) => licenseRank(a.license) - licenseRank(b.license)
@@ -95,32 +120,97 @@ async function searchOpenverse(query: string, count: number): Promise<ImageResul
   }));
 }
 
-function aiGeneratedImages(query: string, count: number, offset: number): ImageResult[] {
+function stripHtml(html: string): string {
+  return String(html || "").replace(/<[^>]*>/g, "").trim().slice(0, 80);
+}
+
+// Wikimedia Commons: fully open-licensed, no key, hotlinkable thumbnails.
+async function searchWikimedia(query: string, count: number): Promise<ImageResult[]> {
+  const data = await fetchJson(
+    `https://commons.wikimedia.org/w/api.php?action=query&format=json&origin=*&generator=search` +
+    `&gsrsearch=${encodeURIComponent("filetype:bitmap " + query)}&gsrnamespace=6&gsrlimit=${count * 2}` +
+    `&prop=imageinfo&iiprop=url%7Cextmetadata&iiurlwidth=1200`
+  );
+  const pages: any[] = Object.values((data as any)?.query?.pages || {});
+  return pages
+    .filter((p) => p?.imageinfo?.[0]?.thumburl || p?.imageinfo?.[0]?.url)
+    .map((p) => {
+      const info = p.imageinfo[0];
+      const meta = info.extmetadata || {};
+      const artist = meta.Artist?.value ? stripHtml(meta.Artist.value) : "";
+      return {
+        url: info.thumburl || info.url || "",
+        alt: String(p.title || query).replace(/^File:/, "").replace(/\.[a-z]+$/i, "").replace(/_/g, " "),
+        source: "wikimedia",
+        credit: artist ? `${artist} via Wikimedia Commons` : "via Wikimedia Commons",
+      };
+    });
+}
+
+// LoremFlickr: keyword-based photos, no key. `lock=` pins one deterministic
+// photo per URL, so every post gets its own unique (but stable) picture.
+function loremFlickrImages(
+  query: string,
+  count: number,
+  excludeNormalized?: Set<string>
+): ImageResult[] {
+  const keywords = query.split(/\s+/).filter(Boolean).slice(0, 3).join(",") || "technology";
+  const images: ImageResult[] = [];
+  let guard = 0;
+  while (images.length < count && guard < count * 10 + 10) {
+    guard++;
+    const lock = Math.floor(Math.random() * 1000000);
+    const url = `https://loremflickr.com/1200/630/${encodeURIComponent(keywords)}?lock=${lock}`;
+    if (excludeNormalized?.has(normalizeImageUrl(url))) continue;
+    images.push({ url, alt: query, source: "loremflickr" });
+  }
+  return images;
+}
+
+function aiGeneratedImages(
+  query: string,
+  count: number,
+  offset: number,
+  excludeNormalized?: Set<string>
+): ImageResult[] {
   // Prompt-engineered from the post topic + hard tech anchoring, so the
   // visual always shows coding / computers / AI — never generic subjects.
   const prompt = `${query}, software programming theme, developer workspace with computer code on screen, professional digital illustration, modern tech blog header style, vibrant, no text, no watermark`;
   const images: ImageResult[] = [];
-  for (let i = 0; i < count; i++) {
-    images.push({
-      url: `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1200&height=630&nologo=true&seed=${stableSeed(query) + offset + i}`,
-      alt: query,
-      source: "pollinations",
-    });
+  // Random base per call: the same topic re-generated later must not
+  // reproduce the identical picture (stableSeed alone would repeat it).
+  let seed = stableSeed(query + "|" + Date.now() + "|" + Math.floor(Math.random() * 100000)) + offset;
+  let guard = 0;
+  while (images.length < count && guard < count * 10 + 10) {
+    guard++;
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=1200&height=630&nologo=true&seed=${seed}`;
+    seed++;
+    if (excludeNormalized?.has(normalizeImageUrl(url))) continue;
+    images.push({ url, alt: query, source: "pollinations" });
   }
   return images;
+}
+
+export interface FindImagesOptions {
+  /** Recently used image URLs — these are skipped, never returned. */
+  exclude?: string[];
 }
 
 export async function findImages(
   query: string,
   count: number = 3,
-  category: string = ""
+  category: string = "",
+  options: FindImagesOptions = {}
 ): Promise<ImageResult[]> {
   const found: ImageResult[] = [];
   const seen = new Set<string>();
+  const excluded = new Set((options.exclude || []).map(normalizeImageUrl));
   const push = (img: ImageResult) => {
     if (found.length >= count || !img.url || seen.has(img.url)) return;
     // Skip non-image URLs (Openverse sometimes returns page links)
     if (!/^https:\/\//.test(img.url)) return;
+    // Skip photos already used on recent posts
+    if (excluded.has(normalizeImageUrl(img.url))) return;
     seen.add(img.url);
     found.push(img);
   };
@@ -139,31 +229,41 @@ export async function findImages(
   ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
   const tasks: Promise<ImageResult[]>[] = [];
-  if (PEXELS_API_KEY) tasks.push(searchPexels(`${query} programming`, count));
+  // Over-fetch stock candidates: recently used photos are filtered out
+  // below, so the pool needs headroom to still fill `count` slots.
+  if (PEXELS_API_KEY) tasks.push(searchPexels(`${query} programming`, count * 2));
   for (const v of variants) tasks.push(searchOpenverse(v, count));
+  // Wikimedia Commons: 2 tech-anchored searches (full query would miss).
+  tasks.push(searchWikimedia(`${query} computer`, count));
+  tasks.push(searchWikimedia(techQueryFor(category), count));
   const settled = await Promise.allSettled(tasks);
 
   // Pexels results first (if key configured, it's tasks[0])
-  let openverseResults: ImageResult[] = [];
+  let stockResults: ImageResult[] = [];
   for (const s of settled) {
     if (s.status === "fulfilled") {
       // Identify source by first item (pexels only runs when key exists)
       if (PEXELS_API_KEY && s.value.length && s.value[0].source === "pexels") {
         s.value.forEach(push);
       } else {
-        openverseResults = openverseResults.concat(s.value);
+        stockResults = stockResults.concat(s.value);
       }
     }
   }
   if (settled.some((s) => s.status === "rejected")) {
     console.error("[IMAGE FINDER] A stock source failed, using next source");
   }
-  openverseResults.forEach(push);
+  stockResults.forEach(push);
+
+  // Keyword photos (no key) before AI generation — real photography first.
+  if (found.length < count) {
+    loremFlickrImages(`${query} ${techQueryFor(category)}`, count - found.length, excluded).forEach(push);
+  }
 
   // AI-generated topical images fill ALL remaining slots (always related,
   // free, no key). This is also the last resort — never random filler.
   if (found.length < count) {
-    aiGeneratedImages(query, count - found.length, found.length).forEach(push);
+    aiGeneratedImages(query, count - found.length, found.length, excluded).forEach(push);
   }
 
   return found.slice(0, count);

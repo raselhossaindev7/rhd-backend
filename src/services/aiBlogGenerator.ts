@@ -1,5 +1,6 @@
 import { slugify } from "../utils/helpers";
-import { findImages, extractKeywords } from "./imageFinder";
+import prisma from "../config/db";
+import { findImages, extractKeywords, normalizeImageUrl } from "./imageFinder";
 import { aiChatFull, extractJsonObject } from "./aiProvider";
 
 export interface BlogPostData {
@@ -110,8 +111,35 @@ export async function generateBlogPost(
   description?: string,
   onStage?: (stage: BlogGenStage) => void
 ): Promise<BlogPostData> {
+  // Collect recently used photos so this post never reuses them: cover
+  // images plus inline Markdown images from the newest posts.
+  const exclude: string[] = [];
+  try {
+    const recent = await prisma.post.findMany({
+      select: { image: true, ogImage: true, content: true },
+      orderBy: { createdAt: "desc" },
+      take: 25,
+    });
+    for (const p of recent) {
+      if (p.image) exclude.push(p.image);
+      if (p.ogImage && p.ogImage !== p.image) exclude.push(p.ogImage);
+      const body = p.content || "";
+      const mdImg = /!\[[^\]]*\]\((https?:[^)\s]+)/g;
+      let m: RegExpExecArray | null;
+      let n = 0;
+      while ((m = mdImg.exec(body)) && n < 5) {
+        n++;
+        exclude.push(m[1]);
+      }
+    }
+  } catch (err) {
+    // Image-history lookup must never block generation — worst case the
+    // finder just rotates source pages / AI seeds for variety.
+    console.warn("[AI BLOG GENERATOR] Could not load recent images:", (err as Error)?.message || err);
+  }
+
   const imageKeywords = extractKeywords(title, category);
-  const images = await findImages(imageKeywords, 3, category);
+  const images = await findImages(imageKeywords, 3, category, { exclude });
 
   // ── Two-step generation ──────────────────────────────────
   // The old single-call design stuffed 1200+ words of Markdown PLUS all

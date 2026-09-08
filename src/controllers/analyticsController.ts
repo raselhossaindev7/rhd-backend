@@ -228,3 +228,90 @@ export async function getAnalytics(req: Request, res: Response) {
     sendError(res, error as Error);
   }
 }
+
+// "/blog/my-post?utm=x" → "my-post". Returns "" for non-post paths.
+function blogSlug(cleanPath: string): string {
+  const c = String(cleanPath ?? "");
+  if (!c.startsWith("/blog/")) return "";
+  return c.slice("/blog/".length).split("/")[0] || "";
+}
+
+// ─── Blog-only analytics (ADDITIVE — existing handlers untouched) ───
+// Per-post totals + per-post daily series for /blog/:slug paths.
+// Powers the admin "Blog Analytics" page and the views column /
+// trending badges on the admin blog list.
+export async function getBlogAnalytics(req: Request, res: Response) {
+  try {
+    const days = Math.min(Math.max(parseInt((req.query.days as string) || "30", 10) || 30, 1), 90);
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+
+    // Sequential reads (same reason as getAnalytics: never pin the
+    // Supabase transaction-mode pooler with a batched transaction).
+    const siteViews = await prisma.pageView.count({ where: { createdAt: { gte: since } } });
+
+    // NOTE: leading slash is KEPT (RTRIM only) so blogSlug() can match
+    // "/blog/…". Query strings are stripped so "/blog/x?utm=1" and
+    // "/blog/x" collapse to the same post.
+    const totals = await prisma.$queryRaw<{ clean: string; views: number }[]>`
+      SELECT RTRIM(SPLIT_PART(path, '?', 1), '/') AS clean,
+             COUNT(*)::int AS views
+      FROM page_views
+      WHERE "createdAt" >= ${since}
+        AND path LIKE '/blog/%'
+        AND path <> '/blog'
+      GROUP BY clean
+      ORDER BY views DESC
+    `;
+
+    // Aggregate per slug (trailing-slash / query variants already collapsed).
+    const bySlug = new Map<string, number>();
+    for (const r of totals) {
+      const slug = blogSlug((r as any).clean);
+      if (!slug) continue;
+      bySlug.set(slug, (bySlug.get(slug) ?? 0) + (Number((r as any).views) || 0));
+    }
+    const posts = [...bySlug.entries()]
+      .map(([slug, views]) => ({ slug, views }))
+      .sort((a, b) => b.views - a.views);
+
+    const daily = await prisma.$queryRaw<{ date: string; clean: string; views: number }[]>`
+      SELECT DATE("createdAt") AS date,
+             RTRIM(SPLIT_PART(path, '?', 1), '/') AS clean,
+             COUNT(*)::int AS views
+      FROM page_views
+      WHERE "createdAt" >= ${since}
+        AND path LIKE '/blog/%'
+        AND path <> '/blog'
+      GROUP BY DATE("createdAt"), clean
+      ORDER BY date ASC
+    `;
+
+    const byDaySlug = new Map<string, number>();
+    for (const r of daily) {
+      const slug = blogSlug((r as any).clean);
+      if (!slug) continue;
+      const d = (r as any).date instanceof Date
+        ? ((r as any).date as Date).toISOString().slice(0, 10)
+        : String((r as any).date).slice(0, 10);
+      const key = `${d}|${slug}`;
+      byDaySlug.set(key, (byDaySlug.get(key) ?? 0) + (Number((r as any).views) || 0));
+    }
+    const series = [...byDaySlug.entries()].map(([key, views]) => {
+      const [date, slug] = key.split("|");
+      return { date, slug, views };
+    });
+
+    const totalBlogViews = posts.reduce((sum, p) => sum + p.views, 0);
+
+    sendSuccess(res, {
+      days,
+      totalBlogViews,
+      siteViews,
+      posts,
+      daily: series,
+    });
+  } catch (error) {
+    sendError(res, error as Error);
+  }
+}
