@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
 import { clearCache } from "../middleware/cache";
+import { generateServiceThumbnail, buildThumbnailPrompt, THUMBNAIL_STYLES } from "../services/aiThumbnailGenerator";
 
 // GET /api/services — public, returns all active services
 export const getServices = async (req: Request, res: Response) => {
@@ -200,6 +201,48 @@ export const deleteService = async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Delete service error:", error);
     res.status(500).json({ success: false, error: "Failed to delete service" });
+  }
+};
+
+// POST /api/services/thumbnail/generate — admin, AI cover → R2
+// Body: { title, category, style?, customPrompt? }
+// Returns live R2 URL + prompt + source so admin can preview & apply.
+export const generateThumbnail = async (req: Request, res: Response) => {
+  try {
+    const { title, category, style = "pro-saas", customPrompt } = req.body || {};
+    if (!title || !category) {
+      return res.status(400).json({ success: false, error: "Title and category are required" });
+    }
+    if (!process.env.HF_TOKEN && !process.env.POLLINATIONS_KEY) {
+      return res.status(500).json({ success: false, error: "No thumbnail keys configured (HF_TOKEN / POLLINATIONS_KEY)" });
+    }
+    const prompt = buildThumbnailPrompt(String(title), String(category), String(style), customPrompt ? String(customPrompt) : undefined);
+    const thumb = await generateServiceThumbnail(String(title), String(category), String(style), customPrompt ? String(customPrompt) : undefined);
+    if (!thumb?.url) {
+      return res.status(502).json({ success: false, error: "AI generation failed — both providers unavailable. Try again." });
+    }
+    clearCache();
+    res.json({ success: true, data: thumb });
+  } catch (error) {
+    console.error("Generate thumbnail error:", error);
+    res.status(500).json({ success: false, error: "Failed to generate thumbnail" });
+  }
+};
+
+// GET /api/services/thumbnail/styles — admin, list style presets + prompt preview
+export const getThumbnailStyles = async (req: Request, res: Response) => {
+  try {
+    const { title = "Service Title", category = "Web & SaaS", style = "pro-saas" } = req.query as Record<string, string>;
+    const styles = Object.entries(THUMBNAIL_STYLES).map(([id, s]) => ({
+      id,
+      label: s.label,
+      hint: s.hint,
+      previewPrompt: buildThumbnailPrompt(String(title), String(category), id),
+    }));
+    res.json({ success: true, data: { styles, prompt: buildThumbnailPrompt(String(title), String(category), String(style)) } });
+  } catch (error) {
+    console.error("Get thumbnail styles error:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch styles" });
   }
 };
 

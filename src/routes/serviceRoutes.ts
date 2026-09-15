@@ -6,6 +6,8 @@ import {
   createService,
   updateService,
   deleteService,
+  generateThumbnail,
+  getThumbnailStyles,
 } from "../controllers/serviceController";
 import { authenticate, authorize } from "../middleware/auth";
 import { cache } from "../middleware/cache";
@@ -72,10 +74,14 @@ const serviceSchema = z.object({
   faqJson: faqSchema,
   howToSteps: howToSchema,
   speakableText: z.string().optional().nullable(),
+  image: z.string().optional().nullable(),
 });
 
 // Public (cached 60s — invalidated on create/update/delete)
 router.get("/", cache(60), getServices);
+// AI thumbnail studio (must sit BEFORE /:id + /slug/:slug so "thumbnail" is never treated as an id)
+router.post("/thumbnail/generate", authenticate, authorize(["ADMIN"]), generateThumbnail);
+router.get("/thumbnail/styles", authenticate, authorize(["ADMIN"]), getThumbnailStyles);
 router.get("/slug/:slug", cache(60), getServiceBySlug);
 
 // Protected (admin)

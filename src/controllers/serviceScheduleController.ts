@@ -1,41 +1,43 @@
 import { Request, Response } from "express";
 import prisma, { safeQuery } from "../config/db";
 import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
-import { generateTopics, saveTopics } from "../services/aiTopicGenerator";
-import { getBlogDemandWithGsc } from "../services/demandSignals";
-
-// ─── Live Google Demand (admin inspector) ───────────────
-// Returns the ranked query pool the next refill/generation will use.
-// force (?refresh=1) bypasses the 6h collector cache. First-ever call
-// takes ~10-20s (live Google fetches); later calls are instant.
-import { generateBlogPost, BlogPostData } from "../services/aiBlogGenerator";
+import { generateServiceTopics, saveServiceTopics } from "../services/aiServiceTopicGenerator";
+import { getServiceDemandWithGsc } from "../services/demandSignals";
+import { generateService, ServiceData } from "../services/aiServiceGenerator";
 import { TopicStatus } from "@prisma/client";
 
+// ─── Service Autopilot (daily cadence, trending-first) ──
+// Queue model is ServiceTopic; generation turns one PENDING topic into
+// a full Service row. Same guards: single global generation, detached
+// HTTP (202 + background work), stuck-sweep + backoff + refill.
+//
+// NOTE on cadence: the cron publishes DAILY (see serviceScheduler.ts)
+// with a 1-topic buffer — trending analysis first, then generate a
+// service that clients actually search for.
+
 // ─── Generation concurrency guard ─────────────────────────
-// One blog generation burns ~6k TPM-limited Groq tokens per attempt and
-// holds its HTTP connection for 1-2 minutes. Two overlapping runs
-// (cron + manual "Generate Now", double-clicks, retry spam) instantly
-// 429 the key AND pile more load on the DB pool. One at a time, globally.
 let generationInFlight = false;
 
 // ─── Live generation progress (polled by admin progress bar) ──
-// In-memory by design: reset on restart, and the 15-min sweeper reclaims
-// any topic left GENERATING by a dead process.
-export type GenerationStage = "preparing" | "writing" | "meta" | "thumbnail" | "publishing";
+export type ServiceGenerationStage = "trending" | "writing" | "meta" | "thumbnail" | "publishing";
 
-interface GenerationProgressState {
+interface ServiceGenerationProgressState {
   active: boolean;
   topicId: string | null;
   topicTitle: string | null;
-  stage: GenerationStage | null;
+  stage: ServiceGenerationStage | null;
   startedAt: number | null;
   lastStatus: "published" | "failed" | null;
   lastTopicTitle: string | null;
   lastError: string | null;
   finishedAt: number | null;
+  // Thumbnail live info (visible in admin while autopilot runs)
+  thumbnailStage: "idle" | "generating" | "done" | "fallback" | null;
+  thumbnailUrl: string | null;
+  thumbnailSource: string | null;
 }
 
-const generationProgress: GenerationProgressState = {
+const generationProgress: ServiceGenerationProgressState = {
   active: false,
   topicId: null,
   topicTitle: null,
@@ -45,21 +47,24 @@ const generationProgress: GenerationProgressState = {
   lastTopicTitle: null,
   lastError: null,
   finishedAt: null,
+  thumbnailStage: null,
+  thumbnailUrl: null,
+  thumbnailSource: null,
 };
 
-const STAGE_LABELS: Record<GenerationStage, string> = {
-  preparing: "Finding trending topic",
-  writing: "AI writing article",
+const STAGE_LABELS: Record<ServiceGenerationStage, string> = {
+  trending: "Analyzing trending topics",
+  writing: "AI writing client-focused content",
   meta: "SEO meta + FAQ",
   thumbnail: "Generating AI cover image",
-  publishing: "Publishing post",
+  publishing: "Publishing service",
 };
 
-function setProgress(patch: Partial<GenerationProgressState>): void {
+function setProgress(patch: Partial<ServiceGenerationProgressState>): void {
   Object.assign(generationProgress, patch);
 }
 
-export function getGenerationStatus() {
+export function getServiceGenerationStatus() {
   const elapsedSec =
     generationProgress.active && generationProgress.startedAt
       ? Math.floor((Date.now() - generationProgress.startedAt) / 1000)
@@ -73,7 +78,7 @@ export function getGenerationStatus() {
 
 // ─── Topic CRUD ──────────────────────────────────────────
 
-export async function getTopics(req: Request, res: Response) {
+export async function getServiceTopics(req: Request, res: Response) {
   try {
     const status = req.query.status as string | undefined;
     const page = parseInt((req.query.page as string) || "1", 10);
@@ -85,9 +90,9 @@ export async function getTopics(req: Request, res: Response) {
 
     // Sequential reads (no $transaction — see db.ts: a batch pins one
     // server connection on the Supabase transaction-mode pooler).
-    const topics = await prisma.topic.findMany({
+    const topics = await prisma.serviceTopic.findMany({
       where,
-      include: { post: { select: { id: true, slug: true, title: true, published: true } } },
+      include: { service: { select: { id: true, slug: true, title: true, active: true } } },
       orderBy: [
         { priority: "desc" },
         { scheduledFor: "asc" },
@@ -96,7 +101,7 @@ export async function getTopics(req: Request, res: Response) {
       skip,
       take: limit,
     });
-    const total = await prisma.topic.count({ where });
+    const total = await prisma.serviceTopic.count({ where });
 
     sendSuccess(res, {
       topics,
@@ -107,7 +112,7 @@ export async function getTopics(req: Request, res: Response) {
   }
 }
 
-export async function createTopic(req: Request, res: Response) {
+export async function createServiceTopic(req: Request, res: Response) {
   try {
     const { title, category, keywords, description, priority, scheduledFor } = req.body;
 
@@ -115,7 +120,7 @@ export async function createTopic(req: Request, res: Response) {
       throw new ApiError(400, "Title and category are required");
     }
 
-    const topic = await prisma.topic.create({
+    const topic = await prisma.serviceTopic.create({
       data: {
         title,
         category,
@@ -133,7 +138,7 @@ export async function createTopic(req: Request, res: Response) {
   }
 }
 
-export async function updateTopic(req: Request, res: Response) {
+export async function updateServiceTopic(req: Request, res: Response) {
   try {
     const id = req.params.id as string;
     const { title, category, keywords, description, priority, scheduledFor, status } = req.body as {
@@ -146,10 +151,10 @@ export async function updateTopic(req: Request, res: Response) {
       status?: TopicStatus;
     };
 
-    const existing = await prisma.topic.findUnique({ where: { id } });
-    if (!existing) throw new ApiError(404, "Topic not found");
+    const existing = await prisma.serviceTopic.findUnique({ where: { id } });
+    if (!existing) throw new ApiError(404, "Service topic not found");
 
-    const topic = await prisma.topic.update({
+    const topic = await prisma.serviceTopic.update({
       where: { id },
       data: {
         ...(title !== undefined && { title }),
@@ -168,12 +173,12 @@ export async function updateTopic(req: Request, res: Response) {
   }
 }
 
-export async function deleteTopic(req: Request, res: Response) {
+export async function deleteServiceTopic(req: Request, res: Response) {
   try {
     const id = req.params.id as string;
 
-    const existing = await prisma.topic.findUnique({ where: { id } });
-    if (!existing) throw new ApiError(404, "Topic not found");
+    const existing = await prisma.serviceTopic.findUnique({ where: { id } });
+    if (!existing) throw new ApiError(404, "Service topic not found");
 
     // Only allow deleting PENDING or FAILED topics
     if (existing.status === "GENERATING") {
@@ -182,16 +187,15 @@ export async function deleteTopic(req: Request, res: Response) {
 
     // Race-safe: topic may vanish between findUnique and delete
     try {
-      await prisma.topic.delete({ where: { id } });
+      await prisma.serviceTopic.delete({ where: { id } });
     } catch (delErr: any) {
       if (delErr?.code === "P2025") {
-        // Already deleted (race with another request or cron sweep)
-        return sendSuccess(res, { message: "Topic already deleted" });
+        return sendSuccess(res, { message: "Service topic already deleted" });
       }
       throw delErr;
     }
 
-    sendSuccess(res, { message: "Topic deleted" });
+    sendSuccess(res, { message: "Service topic deleted" });
   } catch (error) {
     sendError(res, error as Error);
   }
@@ -199,19 +203,19 @@ export async function deleteTopic(req: Request, res: Response) {
 
 // ─── AI Topic Generation ─────────────────────────────────
 
-export async function generateTopicSuggestions(req: Request, res: Response) {
+export async function generateServiceTopicSuggestions(req: Request, res: Response) {
   try {
-    const count = parseInt((req.query.count as string) || "5", 10);
+    const count = parseInt((req.query.count as string) || "3", 10);
     const limitedCount = Math.min(Math.max(count, 1), 10);
 
     // Real Google demand first (GSC → Trends → Autocomplete); the generator
     // falls back to pure AI when collectors return nothing.
-    const demand = await getBlogDemandWithGsc();
-    const topics = await generateTopics(limitedCount, {
+    const demand = await getServiceDemandWithGsc();
+    const topics = await generateServiceTopics(limitedCount, {
       queries: demand.queries,
       priorityCategories: demand.categories,
     });
-    const saved = await saveTopics(topics);
+    const saved = await saveServiceTopics(topics);
 
     sendSuccess(res, {
       generated: topics.length,
@@ -223,37 +227,35 @@ export async function generateTopicSuggestions(req: Request, res: Response) {
   }
 }
 
-// ─── Manual Post Generation ──────────────────────────────
+// ─── Manual Service Generation ───────────────────────────
 
-export async function generatePost(req: Request, res: Response) {
-  // NOTE: generation takes 1-3 min (two sequential AI calls). Awaiting it
-  // inside the HTTP cycle trips gateway timeouts (504 on Cloudflare/Render
-  // ~100s). So we validate + enqueue synchronously, respond 202 at once,
-  // and run the heavy work detached. Clients poll topics/stats for completion.
+export async function generateServiceFromTopic(req: Request, res: Response) {
+  // Same detached pattern as blog generatePost: validate + enqueue,
+  // respond 202 at once, heavy work runs in background (gateway ~100s).
   if (generationInFlight) {
-    return sendError(res, new ApiError(409, "A generation is already in progress — try again in a minute"));
+    return sendError(res, new ApiError(409, "A service generation is already in progress — try again in a minute"));
   }
   try {
     const { topicId } = req.body;
 
     let topic;
     if (topicId) {
-      topic = await prisma.topic.findUnique({ where: { id: topicId } });
-      if (!topic) throw new ApiError(404, "Topic not found");
+      topic = await prisma.serviceTopic.findUnique({ where: { id: topicId } });
+      if (!topic) throw new ApiError(404, "Service topic not found");
       if (topic.status === "GENERATING") {
         throw new ApiError(400, "Topic is already being generated");
       }
     } else {
       // Find the next pending topic
-      topic = await prisma.topic.findFirst({
+      topic = await prisma.serviceTopic.findFirst({
         where: { status: "PENDING" },
         orderBy: [{ priority: "desc" }, { scheduledFor: "asc" }, { createdAt: "asc" }],
       });
-      if (!topic) throw new ApiError(404, "No pending topics found");
+      if (!topic) throw new ApiError(404, "No pending service topics found");
     }
 
     // Mark as generating BEFORE responding, so polls/retries see it
-    await prisma.topic.update({
+    await prisma.serviceTopic.update({
       where: { id: topic.id },
       data: { status: "GENERATING", attempts: { increment: 1 } },
     });
@@ -262,29 +264,30 @@ export async function generatePost(req: Request, res: Response) {
     const target = { id: topic.id, title: topic.title, category: topic.category, keywords: topic.keywords, description: topic.description };
     setProgress({
       active: true, topicId: target.id, topicTitle: target.title,
-      stage: "preparing", startedAt: Date.now(),
+      stage: "trending", startedAt: Date.now(),
       lastStatus: null, lastTopicTitle: null, lastError: null, finishedAt: null,
+      thumbnailStage: "idle", thumbnailUrl: null, thumbnailSource: null,
     });
 
     // Detached: must never throw back into Express (response already sent).
     setImmediate(() => {
       (async () => {
         try {
-          const postData = await generateBlogPost(
+          const serviceData = await generateService(
             target.title,
             target.category,
             target.keywords,
             target.description || undefined,
             (stage) => setProgress({ stage }),
-            (info) => setProgress({ stage: info.stage === "generating" ? "thumbnail" : undefined })
+            (info) => setProgress({ thumbnailStage: info.stage, thumbnailUrl: info.url ?? null, thumbnailSource: info.source ?? null })
           );
           setProgress({ stage: "publishing" });
-          const post = await persistGeneratedPost(target.id, postData);
-          console.log(`[SCHEDULE] Manual generation complete: ${post.title}`);
-          setProgress({ active: false, stage: null, lastStatus: "published", lastTopicTitle: post.title, finishedAt: Date.now() });
+          const service = await persistGeneratedService(target.id, serviceData);
+          console.log(`[SERVICE SCHEDULE] Manual generation complete: ${service.title}`);
+          setProgress({ active: false, stage: null, lastStatus: "published", lastTopicTitle: service.title, finishedAt: Date.now() });
         } catch (genError) {
-          console.error(`[SCHEDULE] Manual generation failed for: ${target.title}`, genError);
-          await markTopicFailed(target.id, genError);
+          console.error(`[SERVICE SCHEDULE] Manual generation failed for: ${target.title}`, genError);
+          await markServiceTopicFailed(target.id, genError);
           const msg = genError instanceof Error ? genError.message : "Unknown error";
           setProgress({ active: false, stage: null, lastStatus: "failed", lastTopicTitle: target.title, lastError: msg, finishedAt: Date.now() });
         } finally {
@@ -297,7 +300,7 @@ export async function generatePost(req: Request, res: Response) {
       res,
       {
         accepted: true,
-        message: `Generation started for "${target.title}" — it runs in the background (1-3 min). Watch the topic queue for completion.`,
+        message: `Generation started for "${target.title}" — it runs in the background (1-3 min). Watch the service topic queue for completion.`,
         topic: { id: target.id, title: target.title, status: "GENERATING" },
       },
       202
@@ -309,22 +312,20 @@ export async function generatePost(req: Request, res: Response) {
 
 // ─── Schedule Stats ──────────────────────────────────────
 
-export async function getScheduleStats(req: Request, res: Response) {
+export async function getServiceScheduleStats(req: Request, res: Response) {
   try {
-    // Sequential reads (no $transaction — see db.ts: a batch pins one
-    // server connection on the Supabase transaction-mode pooler).
-    // Slight staleness between aggregates is fine for a stats endpoint.
-    const statusGroups = await prisma.topic.groupBy({ by: ["status"], _count: { status: true } });
-    const totalPosts = await prisma.post.count();
-    const nextTopic = await prisma.topic.findFirst({
+    // Sequential reads (no $transaction — see db.ts).
+    const statusGroups = await prisma.serviceTopic.groupBy({ by: ["status"], _count: { status: true } });
+    const totalServices = await prisma.service.count();
+    const nextTopic = await prisma.serviceTopic.findFirst({
       where: { status: "PENDING" },
       orderBy: [{ priority: "desc" }, { scheduledFor: "asc" }, { createdAt: "asc" }],
       select: { id: true, title: true, category: true, scheduledFor: true },
     });
-    const lastPublished = await prisma.topic.findFirst({
+    const lastPublished = await prisma.serviceTopic.findFirst({
       where: { status: "PUBLISHED" },
       orderBy: { publishedAt: "desc" },
-      select: { title: true, publishedAt: true, post: { select: { slug: true } } },
+      select: { title: true, publishedAt: true, service: { select: { slug: true } } },
     });
 
     const countByStatus = Object.fromEntries(statusGroups.map((g) => [g.status, g._count.status]));
@@ -341,7 +342,7 @@ export async function getScheduleStats(req: Request, res: Response) {
         completed,
         failed,
         published,
-        totalPosts,
+        totalServices,
       },
       nextTopic,
       lastPublished,
@@ -352,53 +353,46 @@ export async function getScheduleStats(req: Request, res: Response) {
 }
 
 // ─── Autopilot Maintenance (no human needed) ─────────────
-// Runs every 15 min via cron AND before each daily generation:
-//  1. sweep stuck GENERATING (crashed restarts, killed requests) → PENDING
-//  2. revive FAILED with backoff (transient AI/DB errors recover alone)
-//  3. refill the PENDING buffer so the queue never runs dry
-
+// Same 3 steps as blog runMaintenance: sweep stuck, revive failed
+// with backoff, refill buffer. Buffer target is 1 — daily cadence,
+// one trending service per day.
 const MAX_AUTO_ATTEMPTS = 10;
-// A real generation takes 1-5 min (longer with 429 waits). Anything still
-// GENERATING after 25 min is dead (restart/timeout) — safe to reclaim.
 const STUCK_GENERATING_MINUTES = 25;
-// FAILED cooldown grows per attempt (15min, 30min, 45min…) capped at 6h,
-// so a rate-limited key recovers instead of being re-pounded.
 const reviveCooldownMs = (attempts: number) =>
   Math.min(15 * 60 * 1000 * Math.max(1, attempts), 6 * 60 * 60 * 1000);
-// Keep ~5 days of daily posts queued.
-const TOPIC_BUFFER_TARGET = 5;
+// Daily cadence — 1 topic buffered ahead.
+const SERVICE_TOPIC_BUFFER_TARGET = 1;
 
-export async function runMaintenance(): Promise<void> {
+export async function runServiceMaintenance(): Promise<void> {
   // 1. Sweep stuck GENERATING
   try {
     const stuckBefore = new Date(Date.now() - STUCK_GENERATING_MINUTES * 60 * 1000);
-    const stuck = await prisma.topic.findMany({
+    const stuck = await prisma.serviceTopic.findMany({
       where: { status: "GENERATING", updatedAt: { lt: stuckBefore } },
       select: { id: true, title: true, attempts: true },
     });
     for (const t of stuck) {
       if (t.attempts >= MAX_AUTO_ATTEMPTS) {
-        await prisma.topic.update({
+        await prisma.serviceTopic.update({
           where: { id: t.id },
           data: { status: "FAILED", error: "Stuck in GENERATING repeatedly — attempts exhausted, needs a look" },
         });
-        console.error(`[CRON] Topic parked as FAILED after ${t.attempts} attempts (was stuck): ${t.title}`);
+        console.error(`[SERVICE CRON] Topic parked as FAILED after ${t.attempts} attempts (was stuck): ${t.title}`);
       } else {
-        await prisma.topic.update({
+        await prisma.serviceTopic.update({
           where: { id: t.id },
           data: { status: "PENDING", error: "Auto-recovered from stuck GENERATING" },
         });
-        console.log(`[CRON] Reclaimed stuck topic → PENDING: ${t.title}`);
+        console.log(`[SERVICE CRON] Reclaimed stuck topic → PENDING: ${t.title}`);
       }
     }
   } catch (err) {
-    console.error("[CRON] Stuck-sweep failed:", err);
+    console.error("[SERVICE CRON] Stuck-sweep failed:", err);
   }
 
-  // 2. Revive FAILED with per-topic backoff (updateMany can't do per-row
-  // cooldowns, so select candidates then filter in code — small table).
+  // 2. Revive FAILED with per-topic backoff
   try {
-    const failed = await prisma.topic.findMany({
+    const failed = await prisma.serviceTopic.findMany({
       where: { status: "FAILED", attempts: { lt: MAX_AUTO_ATTEMPTS } },
       select: { id: true, title: true, attempts: true, updatedAt: true },
     });
@@ -406,51 +400,50 @@ export async function runMaintenance(): Promise<void> {
     let revived = 0;
     for (const t of failed) {
       if (now - new Date(t.updatedAt).getTime() < reviveCooldownMs(t.attempts)) continue;
-      await prisma.topic.update({
+      await prisma.serviceTopic.update({
         where: { id: t.id },
         data: { status: "PENDING", error: null },
       });
       revived++;
     }
-    if (revived > 0) console.log(`[CRON] Re-queued ${revived} failed topic(s)`);
+    if (revived > 0) console.log(`[SERVICE CRON] Re-queued ${revived} failed service topic(s)`);
   } catch (err) {
-    console.error("[CRON] Failed-revive failed:", err);
+    console.error("[SERVICE CRON] Failed-revive failed:", err);
   }
 
   // 3. Refill topic buffer (skip while a generation holds the AI/DB busy)
   try {
     if (generationInFlight) return;
-    const pending = await prisma.topic.count({ where: { status: "PENDING" } });
-    if (pending < TOPIC_BUFFER_TARGET) {
-      console.log(`[CRON] Topic buffer low (${pending}/${TOPIC_BUFFER_TARGET}) — generating ideas...`);
-      const demand = await getBlogDemandWithGsc();
-      const topics = await generateTopics(TOPIC_BUFFER_TARGET, {
+    const pending = await prisma.serviceTopic.count({ where: { status: "PENDING" } });
+    if (pending < SERVICE_TOPIC_BUFFER_TARGET) {
+      console.log(`[SERVICE CRON] Topic buffer low (${pending}/${SERVICE_TOPIC_BUFFER_TARGET}) — generating ideas...`);
+      const demand = await getServiceDemandWithGsc();
+      const topics = await generateServiceTopics(SERVICE_TOPIC_BUFFER_TARGET, {
         queries: demand.queries,
         priorityCategories: demand.categories,
       });
-      const saved = await saveTopics(topics);
-      console.log(`[CRON] Buffer refilled: ${saved} new topic(s)`);
+      const saved = await saveServiceTopics(topics);
+      console.log(`[SERVICE CRON] Buffer refilled: ${saved} new service topic(s)`);
     }
   } catch (err) {
-    console.error("[CRON] Buffer refill failed (will retry next cycle):", err);
+    console.error("[SERVICE CRON] Buffer refill failed (will retry next cycle):", err);
   }
 }
 
 // ─── Live Generation Status (admin progress bar polling) ──
-// NOTE: the route must NOT be cached — the bar polls every few seconds.
 
-export async function getGenerationProgress(_req: Request, res: Response) {
+export async function getServiceGenerationProgress(_req: Request, res: Response) {
   try {
-    sendSuccess(res, getGenerationStatus());
+    sendSuccess(res, getServiceGenerationStatus());
   } catch (error) {
     sendError(res, error as Error);
   }
 }
 
-export async function getBlogDemandData(req: Request, res: Response) {
+export async function getServiceDemandData(req: Request, res: Response) {
   try {
     const force = req.query.refresh === "1";
-    const demand = await getBlogDemandWithGsc(force);
+    const demand = await getServiceDemandWithGsc(force);
     sendSuccess(res, demand);
   } catch (error) {
     sendError(res, error as Error);
@@ -459,191 +452,179 @@ export async function getBlogDemandData(req: Request, res: Response) {
 
 // ─── Cron Job Trigger (Internal) ─────────────────────────
 
-export async function runScheduledGeneration() {
+export async function runScheduledServiceGeneration() {
   if (generationInFlight) {
-    console.log("[CRON] A generation is already running, skipping...");
+    console.log("[SERVICE CRON] A generation is already running, skipping...");
     return;
   }
   generationInFlight = true;
-  console.log("[CRON] Running scheduled blog generation...");
+  console.log("[SERVICE CRON] Running scheduled service generation...");
 
   try {
-    await runMaintenance();
+    await runServiceMaintenance();
 
     // Find next pending topic
-    const topic = await prisma.topic.findFirst({
+    const topic = await prisma.serviceTopic.findFirst({
       where: { status: "PENDING" },
       orderBy: [{ priority: "desc" }, { scheduledFor: "asc" }, { createdAt: "asc" }],
     });
 
     if (!topic) {
-      console.log("[CRON] No pending topics found. Generating suggestions...");
+      console.log("[SERVICE CRON] No pending service topics found. Generating suggestions...");
 
       // Auto-generate topics if none exist
-      const demand = await getBlogDemandWithGsc();
-      const topics = await generateTopics(3, {
+      const demand = await getServiceDemandWithGsc();
+      const topics = await generateServiceTopics(2, {
         queries: demand.queries,
         priorityCategories: demand.categories,
       });
-      await saveTopics(topics);
-      console.log(`[CRON] Generated ${topics.length} new topics`);
+      await saveServiceTopics(topics);
+      console.log(`[SERVICE CRON] Generated ${topics.length} new service topics`);
 
       // Try again to find a topic
-      const newTopic = await prisma.topic.findFirst({
+      const newTopic = await prisma.serviceTopic.findFirst({
         where: { status: "PENDING" },
         orderBy: [{ priority: "desc" }, { scheduledFor: "asc" }, { createdAt: "asc" }],
       });
 
       if (!newTopic) {
-        console.log("[CRON] Still no topics available. Skipping.");
+        console.log("[SERVICE CRON] Still no topics available. Skipping.");
         return;
       }
 
-      return await processTopic(newTopic.id);
+      return await processServiceTopic(newTopic.id);
     }
 
-    return await processTopic(topic.id);
+    return await processServiceTopic(topic.id);
   } catch (error) {
-    console.error("[CRON] Error in scheduled generation:", error);
+    console.error("[SERVICE CRON] Error in scheduled generation:", error);
   } finally {
     generationInFlight = false;
   }
 }
 
-async function uniquePostSlug(base: string): Promise<string> {
+async function uniqueServiceSlug(base: string): Promise<string> {
   let slug = slugify(base);
-  let existing = await prisma.post.findUnique({ where: { slug } });
+  let existing = await prisma.service.findUnique({ where: { slug } });
   if (!existing) return slug;
 
   let i = 2;
   while (existing) {
     slug = `${slugify(base)}-${i}`;
-    existing = await prisma.post.findUnique({ where: { slug } });
+    existing = await prisma.service.findUnique({ where: { slug } });
     i++;
   }
   return slug;
 }
 
-// ─── Resilient persistence ────────────────────────────────────
-// The AI call takes 1-2 min during which pooled DB connections sit idle,
-// and Supabase pooler may close them (10054 ConnectionReset). safeQuery
-// retries transient connection errors, and the slug check makes post
-// creation idempotent (no duplicate if the first try committed before
-// the connection dropped).
+// ─── Resilient persistence (same idempotent pattern as blog) ──
 
-async function persistGeneratedPost(topicId: string, postData: BlogPostData) {
+async function persistGeneratedService(topicId: string, serviceData: ServiceData) {
   // Resolve the final slug once, so retries reuse it (idempotent)
-  const slug = await safeQuery(() => uniquePostSlug(postData.slug));
+  const slug = await safeQuery(() => uniqueServiceSlug(serviceData.slug));
 
-  const post = await safeQuery(async () => {
-    const existing = await prisma.post.findUnique({
-      where: { slug },
-      include: { tags: true },
-    });
+  const service = await safeQuery(async () => {
+    const existing = await prisma.service.findUnique({ where: { slug } });
     if (existing) return existing;
-    return prisma.post.create({
+    return prisma.service.create({
       data: {
         slug,
-        title: postData.title,
-        category: postData.category,
-        excerpt: postData.excerpt,
-        content: postData.content,
-        image: postData.image,
-        readTime: postData.readTime,
-        date: postData.date,
-        published: postData.published,
-        metaTitle: postData.metaTitle,
-        metaDescription: postData.metaDescription,
-        keywords: postData.keywords,
-        ogImage: postData.ogImage,
-        canonical: postData.canonical,
-        geoRegion: postData.geoRegion,
-        geoPlaceName: postData.geoPlaceName,
-        geoPosition: postData.geoPosition,
-        geoCountry: postData.geoCountry,
-        areaServed: postData.areaServed,
-        availableLanguages: postData.availableLanguages,
-        faqJson: postData.faqJson,
-        howToSteps: postData.howToSteps,
-        speakableText: postData.speakableText,
-        scheduledAt: new Date(),
-        tags: {
-          connectOrCreate: postData.tags.map((name) => ({
-            where: { name },
-            create: { name },
-          })),
-        },
+        icon: serviceData.icon,
+        title: serviceData.title,
+        category: serviceData.category,
+        description: serviceData.description,
+        overview: serviceData.overview,
+        image: serviceData.image,
+        order: serviceData.order,
+        featured: serviceData.featured,
+        active: serviceData.active,
+        deliverables: serviceData.deliverables,
+        stack: serviceData.stack,
+        bestFor: serviceData.bestFor,
+        features: serviceData.features,
+        metaTitle: serviceData.metaTitle,
+        metaDescription: serviceData.metaDescription,
+        ogImage: serviceData.ogImage,
+        keywords: serviceData.keywords,
+        canonical: serviceData.canonical,
+        geoRegion: serviceData.geoRegion,
+        geoPlaceName: serviceData.geoPlaceName,
+        geoPosition: serviceData.geoPosition,
+        geoCountry: serviceData.geoCountry,
+        areaServed: serviceData.areaServed,
+        availableLanguages: serviceData.availableLanguages,
+        faqJson: serviceData.faqJson,
+        howToSteps: serviceData.howToSteps,
+        speakableText: serviceData.speakableText,
       },
-      include: { tags: true },
     });
   });
 
   await safeQuery(() =>
-    prisma.topic.update({
+    prisma.serviceTopic.update({
       where: { id: topicId },
       data: {
         status: "PUBLISHED",
-        postId: post.id,
+        serviceId: service.id,
         generatedAt: new Date(),
         publishedAt: new Date(),
       },
     })
   );
 
-  return post;
+  return service;
 }
 
-async function markTopicFailed(topicId: string, genError: unknown): Promise<void> {
+async function markServiceTopicFailed(topicId: string, genError: unknown): Promise<void> {
   const message = genError instanceof Error ? genError.message : "Unknown error";
   try {
     await safeQuery(() =>
-      prisma.topic.update({
+      prisma.serviceTopic.update({
         where: { id: topicId },
         data: { status: "FAILED", error: message },
       })
     );
   } catch (dbError) {
-    // Status update itself failed (e.g. DB still unreachable) — log it,
-    // the original generation error is what matters to the caller.
-    console.error("[SCHEDULE] Failed to mark topic as failed:", dbError);
+    console.error("[SERVICE SCHEDULE] Failed to mark topic as failed:", dbError);
   }
 }
 
-async function processTopic(topicId: string) {
-  const topic = await prisma.topic.findUnique({ where: { id: topicId } });
+async function processServiceTopic(topicId: string) {
+  const topic = await prisma.serviceTopic.findUnique({ where: { id: topicId } });
   if (!topic) return null;
 
   // Mark as generating
-  await prisma.topic.update({
+  await prisma.serviceTopic.update({
     where: { id: topic.id },
     data: { status: "GENERATING", attempts: { increment: 1 } },
   });
 
   setProgress({
     active: true, topicId: topic.id, topicTitle: topic.title,
-    stage: "preparing", startedAt: Date.now(),
+    stage: "trending", startedAt: Date.now(),
     lastStatus: null, lastTopicTitle: null, lastError: null, finishedAt: null,
+    thumbnailStage: "idle", thumbnailUrl: null, thumbnailSource: null,
   });
 
   try {
-    const postData = await generateBlogPost(
+    const serviceData = await generateService(
       topic.title,
       topic.category,
       topic.keywords,
       topic.description || undefined,
       (stage) => setProgress({ stage }),
-      (info) => setProgress({ stage: info.stage === "generating" ? "thumbnail" : undefined })
+      (info) => setProgress({ thumbnailStage: info.stage, thumbnailUrl: info.url ?? null, thumbnailSource: info.source ?? null })
     );
 
     setProgress({ stage: "publishing" });
-    const post = await persistGeneratedPost(topic.id, postData);
+    const service = await persistGeneratedService(topic.id, serviceData);
 
-    console.log(`[CRON] Successfully generated post: ${post.title}`);
-    setProgress({ active: false, stage: null, lastStatus: "published", lastTopicTitle: post.title, finishedAt: Date.now() });
-    return post;
+    console.log(`[SERVICE CRON] Successfully generated service: ${service.title}`);
+    setProgress({ active: false, stage: null, lastStatus: "published", lastTopicTitle: service.title, finishedAt: Date.now() });
+    return service;
   } catch (error) {
-    console.error(`[CRON] Failed to generate post for topic: ${topic.title}`, error);
-    await markTopicFailed(topic.id, error);
+    console.error(`[SERVICE CRON] Failed to generate service for topic: ${topic.title}`, error);
+    await markServiceTopicFailed(topic.id, error);
     const msg = error instanceof Error ? error.message : "Unknown error";
     setProgress({ active: false, stage: null, lastStatus: "failed", lastTopicTitle: topic.title, lastError: msg, finishedAt: Date.now() });
     return null;

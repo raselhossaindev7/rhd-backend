@@ -2,6 +2,7 @@ import { slugify } from "../utils/helpers";
 import prisma from "../config/db";
 import { findImages, extractKeywords, normalizeImageUrl } from "./imageFinder";
 import { aiChatFull, extractJsonObject } from "./aiProvider";
+import { generateBlogThumbnail, GeneratedThumbnail } from "./aiThumbnailGenerator";
 
 export interface BlogPostData {
   title: string;
@@ -102,14 +103,15 @@ function stripCodeFences(raw: string): string {
   return (m ? m[1] : trimmed).trim();
 }
 
-export type BlogGenStage = "writing" | "meta";
+export type BlogGenStage = "writing" | "meta" | "thumbnail";
 
 export async function generateBlogPost(
   title: string,
   category: string,
   keywords: string[] = [],
   description?: string,
-  onStage?: (stage: BlogGenStage) => void
+  onStage?: (stage: BlogGenStage) => void,
+  onThumbnail?: (info: { stage: "generating" | "done" | "fallback"; url?: string | null; source?: string | null }) => void
 ): Promise<BlogPostData> {
   // Collect recently used photos so this post never reuses them: cover
   // images plus inline Markdown images from the newest posts.
@@ -140,6 +142,20 @@ export async function generateBlogPost(
 
   const imageKeywords = extractKeywords(title, category);
   const images = await findImages(imageKeywords, 3, category, { exclude });
+
+  // AI cover starts NOW in the background (30-120s) while the article +
+  // meta AI calls run — awaited at the end, so it adds ~zero latency.
+  // Own R2 cover beats stock; failure falls back to stock silently.
+  onStage?.("thumbnail");
+  onThumbnail?.({ stage: "generating" });
+  const thumbPromise = generateBlogThumbnail(title, category, "blog-modern").then((t) => {
+    if (t?.url) onThumbnail?.({ stage: "done", url: t.url, source: t.source });
+    else onThumbnail?.({ stage: "fallback" });
+    return t;
+  }).catch(() => {
+    onThumbnail?.({ stage: "fallback" });
+    return null;
+  });
 
   // ── Two-step generation ──────────────────────────────────
   // The old single-call design stuffed 1200+ words of Markdown PLUS all
@@ -275,8 +291,19 @@ ${article.slice(0, 800)}`;
   const wordCount = (parsed.content || "").split(/\s+/).length;
   const readTime = parsed.readTime || `${Math.max(1, Math.ceil(wordCount / 200))} min read`;
 
-  // Ensure images are available
-  const featuredImage = images[0]?.url || null;
+  // Ensure images are available — AI R2 cover first, stock fallback.
+  let featuredImage = images[0]?.url || null;
+  let coverSource = featuredImage ? "stock" : "none";
+  try {
+    const thumb = await thumbPromise;
+    if (thumb?.url) {
+      featuredImage = thumb.url;
+      coverSource = thumb.source;
+    }
+  } catch {
+    // Thumbnail must never fail generation — stock stands in.
+  }
+  console.log(`[AI BLOG GENERATOR] Cover: ${coverSource}`);
 
   // Add inline images to content if not present
   let processedContent = parsed.content || "";

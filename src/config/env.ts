@@ -51,4 +51,13 @@ export const config = {
   aiProvider: process.env.AI_PROVIDER || "",
   aiModel: process.env.AI_MODEL || "",
   aiBaseUrl: process.env.AI_BASE_URL || "",
+
+  // ─── Blog Images ───────────────────────────────────────
+  pexelsApiKey: process.env.PEXELS_API_KEY || "",
+  pixabayApiKey: process.env.PIXABAY_API_KEY || "",
+  unsplashAccessKey: process.env.UNSPLASH_ACCESS_KEY || "",
+
+  // ─── AI Thumbnails (service covers → R2) ────────────────
+  hfToken: process.env.HF_TOKEN || "",
+  pollinationsKey: process.env.POLLINATIONS_KEY || "",
 };

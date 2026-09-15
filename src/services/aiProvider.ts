@@ -42,16 +42,16 @@ export const AI_PROVIDER_DEFAULTS: Record<
   },
   openrouter: {
     baseUrl: "https://openrouter.ai/api/v1",
-    defaultModel: "minimax/minimax-m2.7:free",
+    defaultModel: "google/gemma-4-31b-it:free",
     suggestedModels: [
-      "minimax/minimax-m2.7:free",
-      "nvidia/nemotron-3-super-120b-a12b:free",
       "google/gemma-4-31b-it:free",
-      "minimax/minimax-m3:free",
       "google/gemma-4-26b-a4b-it:free",
+      "nvidia/nemotron-3-super-120b-a12b:free",
+      "nvidia/nemotron-3.5-lightning:free",
+      "z-ai/glm-5.2:free",
     ],
     keyLabel: "OpenRouter API Key",
-    keyHint: "OpenRouter (https://openrouter.ai/keys) থেকে key নিন। Free models-এ :free থাকে।",
+    keyHint: "OpenRouter (https://openrouter.ai/keys) থেকে key নিন। 429 হলে https://openrouter.ai/settings/integrations এ Gemini key add করুন (BYOK)।",
   },
   groq: {
     baseUrl: "https://api.groq.com/openai/v1",
@@ -141,9 +141,12 @@ export async function getAiConfig(): Promise<AiConfig> {
     if (!Object.keys(map).length) return fallback;
     const provider = (map.ai_provider as AiProviderName) || fallback.provider;
     const safeProvider = AI_PROVIDERS.includes(provider) ? provider : fallback.provider;
+    // If DB has an empty API key (accidentally overwritten), fall back to env key
+    const dbKey = map.ai_api_key ?? "";
+    const apiKey = dbKey || fallback.apiKey;
     return {
       provider: safeProvider,
-      apiKey: map.ai_api_key ?? fallback.apiKey,
+      apiKey,
       model: map.ai_model || fallback.model || AI_PROVIDER_DEFAULTS[safeProvider].defaultModel,
       baseUrl: map.ai_base_url || fallback.baseUrl || AI_PROVIDER_DEFAULTS[safeProvider].baseUrl,
     };
@@ -156,9 +159,14 @@ export async function getAiConfig(): Promise<AiConfig> {
 export async function saveAiConfig(input: Partial<AiConfig> & { provider: AiProviderName }): Promise<AiConfig> {
   const provider = AI_PROVIDERS.includes(input.provider) ? input.provider : "ollama";
   const defaults = AI_PROVIDER_DEFAULTS[provider];
+  // Never overwrite an existing key with empty string — only save if caller
+  // explicitly provides a new key (prevents accidental key deletion on model-only saves).
+  const current = await getAiConfig();
+  const inputKey = (input.apiKey ?? "").trim();
+  const apiKey = inputKey || current.apiKey || "";
   const next: AiConfig = {
     provider,
-    apiKey: (input.apiKey ?? "").trim(),
+    apiKey,
     model: (input.model ?? "").trim() || defaults.defaultModel,
     baseUrl: (input.baseUrl ?? "").trim() || defaults.baseUrl,
   };
@@ -274,6 +282,25 @@ async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOpti
   return { content, finishReason: data.done_reason };
 }
 
+const OPENROUTER_FALLBACK_MODELS = [
+  "google/gemma-4-31b-it:free",
+  "google/gemma-4-26b-a4b-it:free",
+  "nvidia/nemotron-3-super-120b-a12b:free",
+  "nvidia/nemotron-3.5-lightning:free",
+  "z-ai/glm-5.2:free",
+  "qwen/qwen3-235b-a22b:free",
+  "qwen/qwen3-30b-a3b:free",
+  "deepseek/deepseek-r1-0528:free",
+  "deepseek/deepseek-chat-v3-0324:free",
+  "meta-llama/llama-4-maverick:free",
+  "meta-llama/llama-4-scout:free",
+  "microsoft/mai-ds-r1:free",
+];
+
+function isSharedPoolRateLimit(body: string): boolean {
+  return /upstream_provider_shared_pool|temporarily rate-limited upstream/i.test(body);
+}
+
 async function openAiCompatibleChat(
   cfg: AiConfig,
   messages: AiMessage[],
@@ -289,8 +316,8 @@ async function openAiCompatibleChat(
     headers["HTTP-Referer"] = "https://raselhossain.dev";
     headers["X-Title"] = "Rasel Hossain Portfolio";
   }
-  const buildBody = (jsonMode: boolean) => {
-    const body: Record<string, unknown> = { model: cfg.model, messages, temperature: 0.7 };
+  const buildBody = (model: string, jsonMode: boolean) => {
+    const body: Record<string, unknown> = { model, messages, temperature: 0.7 };
     if (jsonMode) body.response_format = { type: "json_object" };
     // Cap output: a 2000-word blog ≈ 3000 tokens; uncapped calls blew
     // Groq's 8000 TPM limit (prompt ~1500 + output ~4000 + retries).
@@ -299,32 +326,64 @@ async function openAiCompatibleChat(
   };
 
   let useJsonMode = !!opts.jsonMode;
+  // Build ordered model list: requested model first, then fallbacks (openrouter only)
+  const tryModels =
+    cfg.provider === "openrouter"
+      ? [cfg.model, ...OPENROUTER_FALLBACK_MODELS.filter((m) => m !== cfg.model)]
+      : [cfg.model];
+  let modelIdx = 0;
+  let currentModel = tryModels[modelIdx]!;
+
   // 429s are waited out (provider tells us how long); 5xx get one fast
-  // retry; anything else fails immediately with a readable message.
-  // Old code failed INSTANTLY on 429 → topic FAILED → cron revived it →
-  // daily token-burn loop. Now a 429 just pauses and continues.
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  // retry; upstream shared-pool 429s rotate to next free model instantly.
+  for (let attempt = 1; attempt <= 12; attempt++) {
     const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
       headers,
-      body: JSON.stringify(buildBody(useJsonMode)),
+      body: JSON.stringify(buildBody(currentModel, useJsonMode)),
       signal: AbortSignal.timeout(180000),
     });
     if (res.ok) {
       const data: any = await res.json();
       const content = data.choices?.[0]?.message?.content || "";
-      if (!content) throw new Error("Empty AI response");
+      if (!content) {
+        // Empty response → try next fallback model (e.g. z-ai/glm sometimes returns empty on tiny prompt)
+        if (cfg.provider === "openrouter" && modelIdx + 1 < tryModels.length) {
+          modelIdx++;
+          currentModel = tryModels[modelIdx]!;
+          console.log(`[AI ${cfg.provider}] Empty response on ${tryModels[modelIdx - 1]}, trying fallback ${currentModel} (${modelIdx + 1}/${tryModels.length})`);
+          continue;
+        }
+        throw new Error("Empty AI response");
+      }
+      if (currentModel !== cfg.model) {
+        console.log(`[AI ${cfg.provider}] Fallback model succeeded: ${currentModel} (requested ${cfg.model})`);
+      }
       return { content, finishReason: data.choices?.[0]?.finish_reason };
     }
     const err = await res.text();
-    if (res.status === 429 && attempt < 4) {
-      const wait = parseRetryAfterSeconds(err, 12) * attempt;
-      console.log(`[AI ${cfg.provider}] Rate limited (429), waiting ${wait}s before retry ${attempt}/3...`);
+    // 404 invalid model → try next fallback immediately
+    if (res.status === 404 && cfg.provider === "openrouter" && modelIdx + 1 < tryModels.length) {
+      modelIdx++;
+      currentModel = tryModels[modelIdx]!;
+      console.log(`[AI ${cfg.provider}] Model not found ${tryModels[modelIdx - 1]}, trying fallback ${currentModel} (${modelIdx + 1}/${tryModels.length})`);
+      continue;
+    }
+    // Shared-pool 429 → try next free model immediately (no 36s wait)
+    if (res.status === 429 && isSharedPoolRateLimit(err) && cfg.provider === "openrouter" && modelIdx + 1 < tryModels.length) {
+      modelIdx++;
+      currentModel = tryModels[modelIdx]!;
+      console.log(`[AI ${cfg.provider}] Shared-pool rate limited on ${tryModels[modelIdx - 1]}, trying fallback ${currentModel} (${modelIdx + 1}/${tryModels.length})`);
+      continue;
+    }
+    if (res.status === 429 && attempt < 6) {
+      const wait = parseRetryAfterSeconds(err, 12) * Math.min(attempt, 3);
+      console.log(`[AI ${cfg.provider}:${currentModel}] Rate limited (429), waiting ${wait}s before retry ${attempt}/5...`);
       await sleep(wait * 1000);
       continue;
     }
-    if (res.status >= 500 && attempt < 3) {
-      console.log(`[AI ${cfg.provider}] Server error (${res.status}), retrying ${attempt}/2...`);
+    if (res.status >= 500 && attempt < 4) {
+      console.log(`[AI ${cfg.provider}] Server error (${res.status}), retrying ${attempt}/3...`);
       await sleep(2000 * attempt);
       continue;
     }
@@ -337,10 +396,10 @@ async function openAiCompatibleChat(
       useJsonMode = false;
       continue;
     }
-    console.error(`[AI ${cfg.provider} ERROR]`, res.status, err.slice(0, 500));
+    console.error(`[AI ${cfg.provider}:${currentModel} ERROR]`, res.status, err.slice(0, 500));
     throw new Error(`AI ${cfg.provider} error (${res.status}): ${providerErrorMessage(err)}`);
   }
-  throw new Error(`AI ${cfg.provider} error: rate limit persisted after retries`);
+  throw new Error(`AI ${cfg.provider} error: rate limit persisted after retries (tried ${tryModels.slice(0, modelIdx + 1).join(", ")})`);
 }
 
 async function resolveChatConfig(override?: Partial<AiConfig>): Promise<AiConfig> {

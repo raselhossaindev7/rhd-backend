@@ -259,6 +259,35 @@ enum TopicStatus {
   PUBLISHED // Post is live
 }
 
+// ─── AI Service Scheduler Topics ──────────────────────────
+// Mirrors Topic (blog autopilot): a queue of service ideas that the
+// service autopilot cron turns into full Service rows. Services are
+// finite offerings, so the buffer target + cadence are smaller/slower
+// than the daily blog (see serviceScheduleController + serviceScheduler).
+
+model ServiceTopic {
+  id           String      @id @default(cuid())
+  title        String // AI-generated or manual service title
+  category     String // Service category
+  keywords     String[] // Target SEO keywords
+  description  String? // Brief description for AI context
+  status       TopicStatus @default(PENDING)
+  priority     Int         @default(0) // Higher = processed first
+  scheduledFor DateTime? // When to generate service
+  generatedAt  DateTime? // When AI generated content
+  publishedAt  DateTime? // When service went live
+  serviceId    String?     @unique // Linked service ID after generation
+  service      Service?    @relation(fields: [serviceId], references: [id])
+  error        String? // Error message if failed
+  attempts     Int         @default(0)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@index([status])
+  @@index([scheduledFor])
+  @@map("service_topics")
+}
+
 model Tag {
   id    String @id @default(cuid())
   name  String @unique
@@ -323,6 +352,8 @@ model Service {
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  serviceTopics ServiceTopic[] // ServiceTopics that generated this service
 
   user   User?   @relation(fields: [userId], references: [id])
   userId String?

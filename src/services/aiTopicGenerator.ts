@@ -46,7 +46,14 @@ Rules:
 6. Return ONLY valid JSON array, no markdown or extra text
 7. Each topic must have: title, category, keywords (3-5), description (1-2 sentences)`;
 
-export async function generateTopics(count: number = 5): Promise<GeneratedTopic[]> {
+export interface TopicDemand {
+  /** Real Google queries (US) — proven search intent, not guesses. */
+  queries?: string[];
+  /** Under-covered categories — at least one topic each. */
+  priorityCategories?: string[];
+}
+
+export async function generateTopics(count: number = 5, demand: TopicDemand = {}): Promise<GeneratedTopic[]> {
   // Fetch existing topics and post titles to avoid duplicates.
   // Sequential reads (no $transaction — see db.ts: a batch pins one
   // server connection on the Supabase transaction-mode pooler).
@@ -66,11 +73,25 @@ export async function generateTopics(count: number = 5): Promise<GeneratedTopic[
     ...recentPosts.map((p) => p.title),
   ];
 
+  // Real-demand grounding: queries people actually typed into Google.
+  // Empty when collectors failed — then the model falls back to pure AI.
+  const demandQueries = [...new Set((demand.queries || []).map((q) => q.trim()).filter(Boolean))].slice(0, 20);
+  const priorityCats = (demand.priorityCategories || []).filter((c) => BLOG_CATEGORIES.includes(c));
+  const demandBlock = demandQueries.length
+    ? `
+REAL GOOGLE QUERIES (US — people actually searched these recently):
+${demandQueries.map((q) => `- ${q}`).join("\n")}
+`
+    : "";
+  const priorityBlock = priorityCats.length
+    ? `\nPRIORITY CATEGORIES (under-covered on this blog — at least one topic from EACH): ${priorityCats.join(", ")}\n`
+    : "";
+
   const prompt = `Generate ${count} unique blog post topics for a tech portfolio blog.
 
 EXISTING TOPICS (DO NOT DUPLICATE):
 ${existingTitles.map((t) => `- ${t}`).join("\n")}
-
+${demandBlock}${priorityBlock}
 BLOG CATEGORIES: ${BLOG_CATEGORIES.join(", ")}
 
 Generate ${count} topics that:
@@ -78,6 +99,7 @@ Generate ${count} topics that:
 2. Focus on trending tech in 2026
 3. Are practical and educational
 4. Have good SEO potential
+${demandQueries.length ? `5. Base AT LEAST HALF the topics on the REAL GOOGLE QUERIES above — keep the searcher's wording/intent in the title and put the exact query (or closest variant) as keywords[0]. Proven demand beats guesses.` : ""}
 
 Return a JSON array with this exact format:
 [

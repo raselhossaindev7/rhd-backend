@@ -2,10 +2,12 @@
 // Priority cascade (all free, all tech-related — coding / programming /
 // computer / AI; NEVER random filler):
 //   1. Pexels      — best relevance + reliable CDN (needs free key)
-//   2. Openverse   — CC images, tech-anchored queries, NO key needed
-//   3. Wikimedia   — Commons API, fully open-licensed, NO key needed
-//   4. LoremFlickr — keyword-based photos, NO key needed
-//   5. Pollinations— AI-generated from the post topic, always related, NO key
+//   2. Pixabay     — keyed stock photos, high relevance (needs free key)
+//   3. Unsplash    — keyed stock photos, high relevance (needs Access Key)
+//   4. Openverse   — CC images, tech-anchored queries, NO key needed
+//   5. Wikimedia   — Commons API, fully open-licensed, NO key needed
+//   6. LoremFlickr — keyword-based photos, NO key needed
+//   7. Pollinations— AI-generated from the post topic, always related, NO key
 // Picsum was deliberately removed: random photos (landscapes, objects)
 // break the tech look of the blog.
 
@@ -17,6 +19,8 @@ interface ImageResult {
 }
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
+const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "";
+const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || "";
 const FETCH_TIMEOUT_MS = 15000;
 
 async function fetchJson(url: string, headers: Record<string, string> = {}): Promise<any> {
@@ -81,21 +85,64 @@ async function searchPexels(query: string, count: number): Promise<ImageResult[]
   }));
 }
 
+async function searchPixabay(query: string, count: number): Promise<ImageResult[]> {
+  // Docs: https://pixabay.com/api/docs/ — key passed as `key` query param.
+  // per_page accepts 3-200; safesearch keeps blog images safe.
+  const perPage = Math.min(200, Math.max(3, count));
+  const data = await fetchJson(
+    `https://pixabay.com/api/?key=${encodeURIComponent(PIXABAY_API_KEY)}` +
+      `&q=${encodeURIComponent(query)}&image_type=photo&orientation=horizontal` +
+      `&safesearch=true&per_page=${perPage}&page=${randomPage()}`
+  );
+  return ((data.hits || []) as any[])
+    .filter((h) => h?.largeImageURL || h?.webformatURL || h?.previewURL)
+    .map((h: any) => ({
+      url: h.largeImageURL || h.webformatURL || h.previewURL || "",
+      alt: h.tags || query,
+      source: "pixabay",
+      credit: h.user ? `Image by ${h.user} on Pixabay` : undefined,
+    }));
+}
+
+async function searchUnsplash(query: string, count: number): Promise<ImageResult[]> {
+  // Docs: https://unsplash.com/documentation#search-photos — public search
+  // uses the Access Key via `Authorization: Client-ID <key>`.
+  // Unsplash demo apps are rate-limited to 50 req/hour, so one call per post.
+  const perPage = Math.min(30, Math.max(3, count));
+  const data = await fetchJson(
+    `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}` +
+      `&page=${randomPage()}&per_page=${perPage}&orientation=landscape&content_filter=high`,
+    { Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}` }
+  );
+  return ((data.results || []) as any[])
+    .filter((r) => r?.urls?.regular || r?.urls?.small || r?.urls?.raw)
+    .map((r: any) => ({
+      url: r.urls?.regular || r.urls?.small || r.urls?.raw || "",
+      alt: r.alt_description || r.description || query,
+      source: "unsplash",
+      credit: r.user?.name ? `Photo by ${r.user.name} on Unsplash` : "via Unsplash",
+    }));
+}
+
 // Every scheduled post is about tech — map its category to a stock-photo
 // query that can ONLY return coding/computer/AI imagery. Used as the
 // fallback query so a generic title word (e.g. "building") can never
 // resolve to buildings/architecture photos.
 const CATEGORY_TECH_QUERY: Record<string, string> = {
+  Programming: "programming code computer",
+  WordPress: "website cms blog development",
+  "Digital Marketing": "seo marketing analytics dashboard",
+  AI: "artificial intelligence robot technology",
+  "Web & SaaS": "website development programming",
   "AI & Automation": "artificial intelligence robot technology",
-  DevOps: "server code deployment technology",
-  "Web Development": "programming code computer",
-  "Full Stack": "programming code computer",
-  Tutorial: "programming code computer screen",
-  "Mobile Apps": "smartphone programming code",
+  Mobile: "mobile app development smartphone",
   "E-commerce": "laptop online shopping technology",
-  "System Design": "server network technology",
-  Career: "software developer office computer",
-  "Case Study": "programmers office computer teamwork",
+  "Business Software": "business software dashboard",
+  Deployment: "server deployment technology",
+  Website: "website development programming code",
+  "Mobile App": "smartphone app development",
+  DevOps: "server code deployment technology",
+  "SEO & Marketing": "seo marketing digital analytics",
 };
 const DEFAULT_TECH_QUERY = "programming code computer";
 
@@ -215,7 +262,7 @@ export async function findImages(
     found.push(img);
   };
 
-  // Pexels + Openverse in parallel (Pexels first for relevance).
+  // Pexels + Pixabay + Unsplash + Openverse in parallel (keyed sources first).
   // Query variants relax full → 2 words → CATEGORY tech query, because
   // Openverse often misses long queries. The bare first-word fallback is
   // deliberately GONE: "building progressive web" → "building" returned
@@ -232,18 +279,21 @@ export async function findImages(
   // Over-fetch stock candidates: recently used photos are filtered out
   // below, so the pool needs headroom to still fill `count` slots.
   if (PEXELS_API_KEY) tasks.push(searchPexels(`${query} programming`, count * 2));
+  if (PIXABAY_API_KEY) tasks.push(searchPixabay(`${query} programming`, count * 2));
+  if (UNSPLASH_ACCESS_KEY) tasks.push(searchUnsplash(`${query} programming`, count * 2));
   for (const v of variants) tasks.push(searchOpenverse(v, count));
   // Wikimedia Commons: 2 tech-anchored searches (full query would miss).
   tasks.push(searchWikimedia(`${query} computer`, count));
   tasks.push(searchWikimedia(techQueryFor(category), count));
   const settled = await Promise.allSettled(tasks);
 
-  // Pexels results first (if key configured, it's tasks[0])
+  // Keyed stock results first (Pexels / Pixabay / Unsplash, only run when keys exist)
   let stockResults: ImageResult[] = [];
   for (const s of settled) {
     if (s.status === "fulfilled") {
-      // Identify source by first item (pexels only runs when key exists)
-      if (PEXELS_API_KEY && s.value.length && s.value[0].source === "pexels") {
+      // Identify keyed source by first item (they only run when keys exist)
+      const src = s.value.length ? s.value[0].source : "";
+      if (src === "pexels" || src === "pixabay" || src === "unsplash") {
         s.value.forEach(push);
       } else {
         stockResults = stockResults.concat(s.value);

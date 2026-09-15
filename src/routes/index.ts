@@ -14,6 +14,7 @@ import chatSessionRoutes from "./chatSessionRoutes";
 import dashboardRoutes from "./dashboardRoutes";
 import settingsRoutes from "./settingsRoutes";
 import scheduleRoutes from "./scheduleRoutes";
+import serviceScheduleRoutes from "./serviceScheduleRoutes";
 import inboxRoutes from "./inboxRoutes";
 
 import prisma from "../config/db";
@@ -35,6 +36,7 @@ router.use("/chat-sessions", chatSessionRoutes);
 router.use("/dashboard", dashboardRoutes);
 router.use("/settings", settingsRoutes);
 router.use("/schedule", scheduleRoutes);
+router.use("/service-schedule", serviceScheduleRoutes);
 router.use("/inbox", inboxRoutes);
 
 // Health check (DB probe has a hard 2.5s timeout — same as /health in
