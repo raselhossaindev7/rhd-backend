@@ -254,25 +254,45 @@ ${article.slice(0, 800)}`;
   onStage?.("meta");
   let parsed: any = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const res = await aiChatFull(
-      [
-        { role: "system", content: "You return only valid JSON objects. No prose, no code fences." },
-        { role: "user", content: metaPrompt },
-      ],
-      undefined,
-      // Small object (~800 tokens) — cannot plausibly truncate at 2000.
-      { jsonMode: true, maxTokens: 2000 }
-    );
     try {
+      const res = await aiChatFull(
+        [
+          { role: "system", content: "You return only valid JSON objects. No prose, no code fences." },
+          { role: "user", content: metaPrompt },
+        ],
+        undefined,
+        // Small object (~800 tokens) — cannot plausibly truncate at 2000.
+        { jsonMode: true, maxTokens: 2000 }
+      );
       const candidate = JSON.parse(extractJsonObject(res.content));
       if (!candidate || typeof candidate !== "object") throw new Error("Not an object");
       parsed = candidate;
       break;
     } catch (err: any) {
       console.error(
-        `[AI BLOG GENERATOR] Meta attempt ${attempt}/2 bad JSON ` +
-          `(len=${res.content.length}, err=${err?.message || "parse failed"})`
+        `[AI BLOG GENERATOR] Meta attempt ${attempt}/2 ` +
+          `(err=${err?.message || "parse failed"})`
       );
+      // On second attempt, retry without jsonMode
+      if (attempt === 1) {
+        try {
+          const res = await aiChatFull(
+            [
+              { role: "system", content: "You return only valid JSON objects. No prose, no code fences." },
+              { role: "user", content: metaPrompt },
+            ],
+            undefined,
+            { maxTokens: 2000 }
+          );
+          const candidate = JSON.parse(extractJsonObject(res.content));
+          if (candidate && typeof candidate === "object") {
+            parsed = candidate;
+            break;
+          }
+        } catch {
+          // Fall through to fallback
+        }
+      }
     }
   }
   if (!parsed) {

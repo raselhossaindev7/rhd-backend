@@ -49,6 +49,13 @@ export const AI_PROVIDER_DEFAULTS: Record<
       "nvidia/nemotron-3-super-120b-a12b:free",
       "nvidia/nemotron-3.5-lightning:free",
       "z-ai/glm-5.2:free",
+      "qwen/qwen3-235b-a22b:free",
+      "qwen/qwen3-30b-a3b:free",
+      "deepseek/deepseek-r1-0528:free",
+      "deepseek/deepseek-chat-v3-0324:free",
+      "meta-llama/llama-4-maverick:free",
+      "meta-llama/llama-4-scout:free",
+      "microsoft/mai-ds-r1:free",
     ],
     keyLabel: "OpenRouter API Key",
     keyHint: "OpenRouter (https://openrouter.ai/keys) থেকে key নিন। 429 হলে https://openrouter.ai/settings/integrations এ Gemini key add করুন (BYOK)।",
@@ -255,33 +262,9 @@ export interface AiChatResult {
   finishReason?: string;
 }
 
-async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOptions = {}): Promise<AiChatResult> {
-  const base = (cfg.baseUrl || AI_PROVIDER_DEFAULTS.ollama.baseUrl).replace(/\/$/, "");
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
-  const body: Record<string, unknown> = { model: cfg.model, messages, stream: false };
-  // Mirror maxTokens as num_predict so long-form generations can't run
-  // unbounded on Ollama while other providers are capped.
-  if (opts.maxTokens) body.options = { num_predict: opts.maxTokens };
-  // Ollama Cloud chat endpoint honours response_format like OpenAI
-  if (opts.jsonMode) (body as any).response_format = { type: "json_object" };
-  const res = await fetch(`${base}/api/chat`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(180000),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    console.error("[AI ollama ERROR]", res.status, err.slice(0, 500));
-    throw new Error(`AI ollama error (${res.status}): ${providerErrorMessage(err)}`);
-  }
-  const data: any = await res.json();
-  const content = data.message?.content || "";
-  if (!content) throw new Error("Empty AI response");
-  return { content, finishReason: data.done_reason };
-}
-
+// Per-provider model rotation — every provider gets the same armor:
+// requested model first, then its fallback list. A 404 / 402 / empty /
+// shared-pool 429 rotates to the next model instantly instead of failing.
 const OPENROUTER_FALLBACK_MODELS = [
   "google/gemma-4-31b-it:free",
   "google/gemma-4-26b-a4b-it:free",
@@ -297,8 +280,140 @@ const OPENROUTER_FALLBACK_MODELS = [
   "microsoft/mai-ds-r1:free",
 ];
 
+const OLLAMA_FALLBACK_MODELS = [
+  "minimax-m3:cloud",
+  "llama3.1:cloud",
+  "qwen3:cloud",
+  "deepseek-v3:cloud",
+  "llama3.1",
+  "qwen2.5",
+];
+
+// Groq / Cerebras / Gemini fall back through their own suggested lists
+// (requested model first). Unknown/stale names 404 → instant rotate.
+const PROVIDER_FALLBACK_MODELS: Record<AiProviderName, string[]> = {
+  ollama: OLLAMA_FALLBACK_MODELS,
+  openrouter: OPENROUTER_FALLBACK_MODELS,
+  groq: AI_PROVIDER_DEFAULTS.groq.suggestedModels,
+  cerebras: AI_PROVIDER_DEFAULTS.cerebras.suggestedModels,
+  gemini: AI_PROVIDER_DEFAULTS.gemini.suggestedModels,
+};
+
+function buildTryModels(provider: AiProviderName, requested: string): string[] {
+  const fallbacks = (PROVIDER_FALLBACK_MODELS[provider] || []).filter((m) => m !== requested);
+  return [requested, ...fallbacks];
+}
+
 function isSharedPoolRateLimit(body: string): boolean {
   return /upstream_provider_shared_pool|temporarily rate-limited upstream/i.test(body);
+}
+
+function isJsonModeError(body: string): boolean {
+  return /response_format|json|structured.output/i.test(body);
+}
+
+function isPaymentError(status: number, body: string): boolean {
+  return status === 402 || /payment|credit|quota|billing|insufficient/i.test(body);
+}
+
+function isAuthError(status: number): boolean {
+  return status === 401 || status === 403;
+}
+
+async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOptions = {}): Promise<AiChatResult> {
+  const base = (cfg.baseUrl || AI_PROVIDER_DEFAULTS.ollama.baseUrl).replace(/\/$/, "");
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (cfg.apiKey) headers.Authorization = `Bearer ${cfg.apiKey}`;
+  const baseBody: Record<string, unknown> = { messages, stream: false };
+  // Mirror maxTokens as num_predict so long-form generations can't run
+  // unbounded on Ollama while other providers are capped.
+  if (opts.maxTokens) baseBody.options = { num_predict: opts.maxTokens };
+
+  let useJsonMode = !!opts.jsonMode;
+  const tryModels = buildTryModels("ollama", cfg.model);
+  let modelIdx = 0;
+  let currentModel = tryModels[modelIdx]!;
+
+  const rotate = (reason: string) => {
+    if (modelIdx + 1 >= tryModels.length) return false;
+    console.log(`[AI ollama] ${reason} on ${currentModel}, trying fallback ${tryModels[modelIdx + 1]} (${modelIdx + 2}/${tryModels.length})`);
+    modelIdx++;
+    currentModel = tryModels[modelIdx]!;
+    return true;
+  };
+
+  for (let attempt = 1; attempt <= 8; attempt++) {
+    const sendBody: Record<string, unknown> = { ...baseBody, model: currentModel };
+    if (useJsonMode) (sendBody as any).response_format = { type: "json_object" };
+    let res: Response;
+    try {
+      res = await fetch(`${base}/api/chat`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(sendBody),
+        signal: AbortSignal.timeout(180000),
+      });
+    } catch (netErr) {
+      // Network blip → one retry per attempt cycle, then fail loud
+      if (attempt < 8) {
+        console.log(`[AI ollama] Network error, retrying (${attempt}/8): ${(netErr as Error)?.message}`);
+        await sleep(2000 * attempt);
+        continue;
+      }
+      throw netErr;
+    }
+    if (!res.ok) {
+      const err = await res.text();
+      if (isAuthError(res.status)) {
+        console.error("[AI ollama ERROR]", res.status, err.slice(0, 500));
+        throw new Error(`AI ollama error (${res.status}): ${providerErrorMessage(err)}`);
+      }
+      // Unknown model / out of credits → next model instantly
+      if ((res.status === 404 || isPaymentError(res.status, err)) && rotate(res.status === 404 ? "Model not found" : "Payment/credits")) continue;
+      // JSON mode unsupported → plain text on same model
+      if (useJsonMode && res.status === 400 && isJsonModeError(err)) {
+        console.log("[AI ollama] JSON mode unsupported, falling back to text mode");
+        useJsonMode = false;
+        continue;
+      }
+      if (res.status === 429 && attempt < 8) {
+        const wait = parseRetryAfterSeconds(err, 10);
+        console.log(`[AI ollama:${currentModel}] Rate limited (429), waiting ${wait}s before retry ${attempt}/8...`);
+        await sleep(wait * 1000);
+        continue;
+      }
+      if (res.status >= 500 && attempt < 8) {
+        console.log(`[AI ollama] Server error (${res.status}), retrying ${attempt}/8...`);
+        await sleep(2000 * attempt);
+        continue;
+      }
+      console.error("[AI ollama ERROR]", res.status, err.slice(0, 500));
+      throw new Error(`AI ollama error (${res.status}): ${providerErrorMessage(err)}`);
+    }
+    const data: any = await res.json();
+    const content = data.message?.content || "";
+    if (!content) {
+      // Empty with JSON mode → same model in plain text first (model may
+      // not support structured output), else rotate to next model.
+      if (useJsonMode) {
+        console.log(`[AI ollama] Empty response with JSON mode on ${currentModel}, retrying as plain text`);
+        useJsonMode = false;
+        continue;
+      }
+      if (rotate("Empty response")) continue;
+      if (attempt < 8) {
+        console.log(`[AI ollama] Empty response, retrying attempt ${attempt}/8...`);
+        await sleep(2000);
+        continue;
+      }
+      throw new Error("Empty AI response");
+    }
+    if (currentModel !== cfg.model) {
+      console.log(`[AI ollama] Fallback model succeeded: ${currentModel} (requested ${cfg.model})`);
+    }
+    return { content, finishReason: data.done_reason };
+  }
+  throw new Error(`AI ollama error: all retries exhausted (tried ${tryModels.slice(0, modelIdx + 1).join(", ")})`);
 }
 
 async function openAiCompatibleChat(
@@ -326,32 +441,54 @@ async function openAiCompatibleChat(
   };
 
   let useJsonMode = !!opts.jsonMode;
-  // Build ordered model list: requested model first, then fallbacks (openrouter only)
-  const tryModels =
-    cfg.provider === "openrouter"
-      ? [cfg.model, ...OPENROUTER_FALLBACK_MODELS.filter((m) => m !== cfg.model)]
-      : [cfg.model];
+  // Build ordered model list: requested model first, then that provider's
+  // fallback list. Works for openrouter AND groq/cerebras/gemini.
+  const tryModels = buildTryModels(cfg.provider, cfg.model);
+  const maxAttempts = Math.max(8, tryModels.length + 3);
   let modelIdx = 0;
   let currentModel = tryModels[modelIdx]!;
 
-  // 429s are waited out (provider tells us how long); 5xx get one fast
-  // retry; upstream shared-pool 429s rotate to next free model instantly.
-  for (let attempt = 1; attempt <= 12; attempt++) {
-    const res = await fetch(`${base}/chat/completions`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(buildBody(currentModel, useJsonMode)),
-      signal: AbortSignal.timeout(180000),
-    });
+  const rotate = (reason: string) => {
+    if (modelIdx + 1 >= tryModels.length) return false;
+    console.log(`[AI ${cfg.provider}] ${reason} on ${tryModels[modelIdx]}, trying fallback ${tryModels[modelIdx + 1]} (${modelIdx + 2}/${tryModels.length})`);
+    modelIdx++;
+    currentModel = tryModels[modelIdx]!;
+    return true;
+  };
+
+  // 429s are waited out (provider tells us how long); 5xx get fast
+  // retries; 404/402/empty/shared-pool 429s rotate to next model instantly.
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${base}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildBody(currentModel, useJsonMode)),
+        signal: AbortSignal.timeout(180000),
+      });
+    } catch (netErr) {
+      if (attempt < maxAttempts) {
+        console.log(`[AI ${cfg.provider}] Network error, retrying (${attempt}/${maxAttempts}): ${(netErr as Error)?.message}`);
+        await sleep(2000 * attempt);
+        continue;
+      }
+      throw netErr;
+    }
     if (res.ok) {
       const data: any = await res.json();
       const content = data.choices?.[0]?.message?.content || "";
       if (!content) {
-        // Empty response → try next fallback model (e.g. z-ai/glm sometimes returns empty on tiny prompt)
-        if (cfg.provider === "openrouter" && modelIdx + 1 < tryModels.length) {
-          modelIdx++;
-          currentModel = tryModels[modelIdx]!;
-          console.log(`[AI ${cfg.provider}] Empty response on ${tryModels[modelIdx - 1]}, trying fallback ${currentModel} (${modelIdx + 1}/${tryModels.length})`);
+        // Empty with JSON mode → same model in plain text first, else next model
+        // (e.g. z-ai/glm sometimes returns empty on tiny JSON prompts).
+        if (useJsonMode) {
+          console.log(`[AI ${cfg.provider}] Empty response with JSON mode on ${currentModel}, retrying as plain text`);
+          useJsonMode = false;
+          continue;
+        }
+        if (rotate("Empty response")) continue;
+        if (attempt < maxAttempts) {
+          await sleep(2000);
           continue;
         }
         throw new Error("Empty AI response");
@@ -362,36 +499,30 @@ async function openAiCompatibleChat(
       return { content, finishReason: data.choices?.[0]?.finish_reason };
     }
     const err = await res.text();
-    // 404 invalid model → try next fallback immediately
-    if (res.status === 404 && cfg.provider === "openrouter" && modelIdx + 1 < tryModels.length) {
-      modelIdx++;
-      currentModel = tryModels[modelIdx]!;
-      console.log(`[AI ${cfg.provider}] Model not found ${tryModels[modelIdx - 1]}, trying fallback ${currentModel} (${modelIdx + 1}/${tryModels.length})`);
-      continue;
+    // Bad key → fail fast with a clear message (retries can't fix it).
+    if (isAuthError(res.status)) {
+      console.error(`[AI ${cfg.provider}:${currentModel} ERROR]`, res.status, err.slice(0, 500));
+      throw new Error(`AI ${cfg.provider} error (${res.status}): ${providerErrorMessage(err)}`);
     }
-    // Shared-pool 429 → try next free model immediately (no 36s wait)
-    if (res.status === 429 && isSharedPoolRateLimit(err) && cfg.provider === "openrouter" && modelIdx + 1 < tryModels.length) {
-      modelIdx++;
-      currentModel = tryModels[modelIdx]!;
-      console.log(`[AI ${cfg.provider}] Shared-pool rate limited on ${tryModels[modelIdx - 1]}, trying fallback ${currentModel} (${modelIdx + 1}/${tryModels.length})`);
-      continue;
-    }
-    if (res.status === 429 && attempt < 6) {
+    // Unknown model or out-of-credits → next model instantly.
+    if (res.status === 404 && rotate("Model not found")) continue;
+    if (isPaymentError(res.status, err) && rotate("Payment/credits")) continue;
+    // Shared-pool 429 → next free model immediately (no long wait).
+    if (res.status === 429 && isSharedPoolRateLimit(err) && rotate("Shared-pool rate limited")) continue;
+    if (res.status === 429 && attempt < maxAttempts) {
       const wait = parseRetryAfterSeconds(err, 12) * Math.min(attempt, 3);
-      console.log(`[AI ${cfg.provider}:${currentModel}] Rate limited (429), waiting ${wait}s before retry ${attempt}/5...`);
+      console.log(`[AI ${cfg.provider}:${currentModel}] Rate limited (429), waiting ${wait}s before retry ${attempt}/${maxAttempts}...`);
       await sleep(wait * 1000);
       continue;
     }
-    if (res.status >= 500 && attempt < 4) {
-      console.log(`[AI ${cfg.provider}] Server error (${res.status}), retrying ${attempt}/3...`);
+    if (res.status >= 500 && attempt < maxAttempts) {
+      console.log(`[AI ${cfg.provider}] Server error (${res.status}), retrying ${attempt}/${maxAttempts}...`);
       await sleep(2000 * attempt);
       continue;
     }
-    // Model doesn't support response_format → retry once as plain text
+    // Model doesn't support response_format → retry as plain text
     // (extractJsonObject fallback still applies downstream).
-    // Matches: "response_format is not supported", "...does not support
-    // feature: structured-outputs", "JSON mode is not available", etc.
-    if (useJsonMode && res.status === 400 && /response_format|json|structured.output/i.test(err)) {
+    if (useJsonMode && res.status === 400 && isJsonModeError(err)) {
       console.log(`[AI ${cfg.provider}] JSON mode unsupported, falling back to text mode`);
       useJsonMode = false;
       continue;
@@ -399,7 +530,7 @@ async function openAiCompatibleChat(
     console.error(`[AI ${cfg.provider}:${currentModel} ERROR]`, res.status, err.slice(0, 500));
     throw new Error(`AI ${cfg.provider} error (${res.status}): ${providerErrorMessage(err)}`);
   }
-  throw new Error(`AI ${cfg.provider} error: rate limit persisted after retries (tried ${tryModels.slice(0, modelIdx + 1).join(", ")})`);
+  throw new Error(`AI ${cfg.provider} error: all retries exhausted (tried ${tryModels.slice(0, modelIdx + 1).join(", ")})`);
 }
 
 async function resolveChatConfig(override?: Partial<AiConfig>): Promise<AiConfig> {
