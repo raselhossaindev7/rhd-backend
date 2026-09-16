@@ -1,4 +1,4 @@
-import { aiChat } from "./aiProvider";
+import { aiChatFull, extractJsonObject } from "./aiProvider";
 
 const EMAIL_SYSTEM_PROMPT = `You are Rasel Hossain's AI email writer. You write professional, compelling emails for cold outreach, follow-ups, and business communication.
 
@@ -105,27 +105,32 @@ IMPORTANT:
 - Subject line should be 40-60 characters
 - Make it personal and specific to the recipient`;
 
-  const content = await aiChat([
-    { role: "system", content: EMAIL_SYSTEM_PROMPT },
-    { role: "user", content: prompt },
-  ]);
-
-  // Parse JSON from response
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error("Invalid AI response format");
+  // Same tolerant pattern as the blog/service generators: jsonMode first,
+  // plain-text retry, extractJsonObject tolerates fences + prose.
+  let parsed: any = null;
+  for (let attempt = 1; attempt <= 2 && !parsed; attempt++) {
+    try {
+      const res = await aiChatFull(
+        [
+          { role: "system", content: EMAIL_SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+        undefined,
+        attempt === 1 ? { jsonMode: true, maxTokens: 2000 } : { maxTokens: 2000 }
+      );
+      const candidate = JSON.parse(extractJsonObject(res.content));
+      if (candidate && typeof candidate === "object") parsed = candidate;
+    } catch (err) {
+      console.warn(`[AI EMAIL] attempt ${attempt}/2 failed:`, (err as Error)?.message || err);
+    }
   }
+  if (!parsed) throw new Error("Failed to parse AI response");
 
-  try {
-    const parsed = JSON.parse(jsonMatch[0]);
-    return {
-      subject: parsed.subject || "Business Inquiry",
-      html: wrapInEmailTemplate(parsed.html || "", request.recipientName),
-      plainText: parsed.plainText || "",
-    };
-  } catch (parseError) {
-    throw new Error("Failed to parse AI response");
-  }
+  return {
+    subject: parsed.subject || "Business Inquiry",
+    html: wrapInEmailTemplate(parsed.html || "", request.recipientName),
+    plainText: parsed.plainText || "",
+  };
 }
 
 function wrapInEmailTemplate(bodyContent: string, recipientName?: string): string {
@@ -226,19 +231,36 @@ RULES:
 Return ONLY a JSON array of strings:
 ["Subject 1", "Subject 2", "Subject 3", "Subject 4", "Subject 5"]`;
 
-  const content = await aiChat([
-    { role: "system", content: EMAIL_SYSTEM_PROMPT },
-    { role: "user", content: prompt },
-  ]);
-
-  const jsonMatch = content.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new Error("Invalid AI response format");
+  let subjects: string[] | null = null;
+  for (let attempt = 1; attempt <= 2 && !subjects; attempt++) {
+    try {
+      const res = await aiChatFull(
+        [
+          { role: "system", content: EMAIL_SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+        undefined,
+        attempt === 1 ? { jsonMode: true, maxTokens: 1000 } : { maxTokens: 1000 }
+      );
+      // Tolerant: bare array OR object-wrapped array ({"subjects": [...]})
+      const text = res.content;
+      const arrMatch = text.match(/\[[\s\S]*?\]/);
+      let raw: unknown = null;
+      if (arrMatch) {
+        try { raw = JSON.parse(arrMatch[0]); } catch { raw = null; }
+      }
+      if (!Array.isArray(raw)) {
+        try {
+          const obj = JSON.parse(extractJsonObject(text)) as Record<string, unknown>;
+          const first = Object.values(obj).find((v) => Array.isArray(v));
+          if (Array.isArray(first)) raw = first;
+        } catch { raw = null; }
+      }
+      if (Array.isArray(raw)) subjects = raw.map((s) => String(s)).filter(Boolean).slice(0, 5);
+    } catch (err) {
+      console.warn(`[AI EMAIL] subjects attempt ${attempt}/2 failed:`, (err as Error)?.message || err);
+    }
   }
-
-  try {
-    return JSON.parse(jsonMatch[0]);
-  } catch {
-    throw new Error("Failed to parse AI response");
-  }
+  if (!subjects || !subjects.length) throw new Error("Failed to parse AI response");
+  return subjects;
 }

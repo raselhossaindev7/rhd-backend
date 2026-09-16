@@ -4,10 +4,17 @@ import bcrypt from "bcryptjs";
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log("🌱 Seeding database...");
+  console.log("dYO� Seeding database...");
+
+  // Never hardcode the admin password — require it from env so a known
+  // credential can't end up live if seed ever runs against production.
+  const adminPassword = process.env.SEED_ADMIN_PASSWORD;
+  if (!adminPassword || adminPassword.length < 12) {
+    throw new Error("SEED_ADMIN_PASSWORD env (min 12 chars) is required to seed.");
+  }
 
   // Create admin user
-  const hashedPassword = await bcrypt.hash("Admin123@@", 12);
+  const hashedPassword = await bcrypt.hash(adminPassword, 12);
   const admin = await prisma.user.upsert({
     where: { email: "raselhossain86666@gmail.com" },
     update: {},

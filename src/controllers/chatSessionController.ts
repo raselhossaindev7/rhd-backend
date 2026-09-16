@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { prisma } from "../config/db";
-import { sendSuccess, sendError, ApiError } from "../utils/helpers";
+import { sendSuccess, sendError, ApiError, parsePagination } from "../utils/helpers";
 import { AuthRequest } from "../types";
 
 // ─── Create Chat Session (Public) ───────────────────────
@@ -74,9 +74,7 @@ export async function getChatSessions(req: AuthRequest, res: Response) {
       ];
     }
 
-    const pageNum = parseInt(page as string);
-    const limitNum = parseInt(limit as string);
-    const skip = (pageNum - 1) * limitNum;
+    const { page: pageNum, limit: limitNum, skip } = parsePagination({ page, limit });
 
     // Sequential reads (no $transaction — see db.ts: a batch pins one
     // server connection on the Supabase transaction-mode pooler).

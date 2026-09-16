@@ -120,7 +120,14 @@ export async function getEmailLogs(params: {
     limit = 20,
   } = params;
 
-  const skip = (page - 1) * limit;
+  // Defensive: callers pass query-parsed values — clamp + allowlist so NaN
+  // or garbage can never reach Prisma (skip/take NaN = 500, bad enum = 500).
+  const safePage = Number.isFinite(Number(page)) && Number(page) >= 1 ? Math.floor(Number(page)) : 1;
+  const safeLimit = Number.isFinite(Number(limit))
+    ? Math.min(Math.max(Math.floor(Number(limit)), 1), 100)
+    : 20;
+  const skip = (safePage - 1) * safeLimit;
+  const take = safeLimit;
   const where: any = {};
 
   // Folder filtering
@@ -138,13 +145,13 @@ export async function getEmailLogs(params: {
     where.status = { notIn: ["TRASH"] };
   }
 
-  // Type filter
-  if (type) {
+  // Type filter (allowlisted — garbage would Prisma-throw a 500)
+  if (type && ["INBOUND", "OUTBOUND", "SYSTEM", "BULK"].includes(type)) {
     where.type = type;
   }
 
-  // Status filter
-  if (status) {
+  // Status filter (allowlisted)
+  if (status && ["PENDING", "SENT", "FAILED", "READ", "ARCHIVED", "TRASH"].includes(status)) {
     where.status = status;
   }
 
@@ -163,7 +170,7 @@ export async function getEmailLogs(params: {
     where,
     orderBy: { sentAt: "desc" },
     skip,
-    take: limit,
+    take,
     select: {
       id: true,
       from: true,
@@ -183,8 +190,8 @@ export async function getEmailLogs(params: {
     emails: logs,
     pagination: {
       total,
-      page,
-      pages: Math.ceil(total / limit),
+      page: safePage,
+      pages: Math.ceil(total / take),
     },
   };
 }

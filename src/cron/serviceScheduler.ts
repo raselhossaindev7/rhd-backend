@@ -23,9 +23,10 @@ export function startServiceScheduler() {
 
   const autoPublish = process.env.SERVICE_AUTO_PUBLISH !== "false";
 
-  // Daily 6:00 PM BST (12:00 UTC) — every day, no parity gate.
+  // Daily 6:00 PM Asia/Dhaka (expression evaluated in that tz) — every
+  // day, no parity gate.
   if (autoPublish) {
-    scheduledTask = cron.schedule("0 12 * * *", async () => {
+    scheduledTask = cron.schedule("0 18 * * *", async () => {
       if (isRunning) {
         console.log("[SERVICE CRON] Previous generation still running, skipping...");
         return;
@@ -91,7 +92,7 @@ export function getServiceSchedulerStatus() {
     autoPublish,
     maintenance: maintenanceTask !== null,
     isGenerating: isRunning,
-    schedule: autoPublish ? "0 12 * * * (daily 6PM BST)" : "disabled (CLIENT mode — manual publish)",
+    schedule: autoPublish ? "0 18 * * * (daily 6PM BST)" : "disabled (CLIENT mode — manual publish)",
     maintenanceSchedule: "7 * * * *",
     timezone: "Asia/Dhaka",
     nextRun: scheduledTask ? "Every day at 6:00 PM BST" : "Manual only",

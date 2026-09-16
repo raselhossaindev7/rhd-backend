@@ -4,8 +4,13 @@ import { Request, Response, NextFunction } from "express";
 // Avoids hitting Postgres on every visitor request.
 // Entries expire after TTL; admin mutations call clearCache().
 
+// NOTE: single-instance memory cache. If Render ever scales to 2+ instances,
+// each has its own copy and clearCache() won't propagate — switch to Redis then.
 const store = new Map<string, { body: unknown; expires: number }>();
 const MAX_ENTRIES = 500;
+// Junk query-variant URLs (?x=1, ?x=2, ...) each create a key — refuse to
+// cache very long URLs so attackers can't thrash the 500-entry budget.
+const MAX_CACHEABLE_URL_LENGTH = 256;
 
 function cacheKey(req: Request): string {
   return `${req.method}:${req.originalUrl}`;
@@ -14,6 +19,8 @@ function cacheKey(req: Request): string {
 export function cache(ttlSeconds = 60) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (req.method !== "GET") return next();
+    // Too long / too many params → serve fresh, don't pollute the cache
+    if (req.originalUrl.length > MAX_CACHEABLE_URL_LENGTH) return next();
 
     const key = cacheKey(req);
     const hit = store.get(key);

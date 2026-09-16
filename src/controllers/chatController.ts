@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { sendSuccess, sendError } from "../utils/helpers";
+import { sendSuccess, sendError, ApiError } from "../utils/helpers";
 import { aiChat } from "../services/aiProvider";
 
 const SYSTEM_PROMPT = `You are Rasel Hossain's AI assistant on his portfolio website (raselhossain.dev). You are friendly, professional, and helpful.
@@ -53,17 +53,46 @@ interface ChatMessage {
   content: string;
 }
 
+const MAX_MESSAGES = 20;
+const MAX_MESSAGE_CHARS = 2000;
+const MAX_TOTAL_CHARS = 12000;
+
 export async function chat(req: Request, res: Response) {
   try {
     const { messages } = req.body as { messages: ChatMessage[] };
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
-      return sendError(res, new Error("Messages array is required"));
+      return sendError(res, new ApiError(400, "Messages array is required"));
     }
+
+    // Cost-abuse guard: public endpoint, so cap count + size.
+    // Only user turns accepted (blocks fake-history prompt injection).
+    // Raw sizes are checked BEFORE slicing so oversize input is rejected
+    // honestly instead of being silently truncated.
+    const rawUser = messages
+      .filter((m) => m && m.role === "user" && typeof m.content === "string")
+      .slice(-MAX_MESSAGES);
+
+    if (rawUser.length === 0) {
+      return sendError(res, new ApiError(400, "At least one user message is required"));
+    }
+
+    const rawTotal = rawUser.reduce((n, m) => n + (m.content as string).length, 0);
+    if (
+      rawTotal > MAX_TOTAL_CHARS ||
+      rawUser.some((m) => (m.content as string).length > MAX_MESSAGE_CHARS * 4)
+    ) {
+      return sendError(res, new ApiError(400, "Conversation too long, please start a new chat"));
+    }
+
+    const userMessages = rawUser.map((m) => ({
+      role: "user" as const,
+      content: (m.content as string).slice(0, MAX_MESSAGE_CHARS),
+    }));
 
     const apiMessages = [
       { role: "system" as const, content: SYSTEM_PROMPT },
-      ...messages.slice(-20).map((m) => ({ role: m.role as "user" | "assistant", content: m.content })),
+      ...userMessages,
     ];
 
     const reply = await aiChat(apiMessages);

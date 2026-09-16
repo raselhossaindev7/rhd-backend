@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
-import { ApiError, sendSuccess, sendError } from "../utils/helpers";
+import { ApiError, sendSuccess, sendError, parsePagination } from "../utils/helpers";
 import { sendContactEmail } from "./emailController";
 import { logContactFormEmail } from "../services/emailLogService";
 
@@ -12,11 +12,17 @@ export async function submitContact(req: Request, res: Response) {
       data: { name, email, type, message },
     });
 
-    // Log to inbox
-    await logContactFormEmail({ name, email, type, message });
+    // Post-save side effects must never fail the request: the message is
+    // already stored, so log + notify best-effort and always return 201.
+    try {
+      // Log to inbox
+      await logContactFormEmail({ name, email, type, message });
 
-    // Send email notifications
-    await sendContactEmail({ name, email, type, message });
+      // Send email notifications
+      await sendContactEmail({ name, email, type, message });
+    } catch (notifyError) {
+      console.error("[CONTACT] Post-save notify failed (message saved):", notifyError);
+    }
 
     sendSuccess(res, { message: "Message sent successfully", id: contact.id }, 201);
   } catch (error) {
@@ -27,9 +33,10 @@ export async function submitContact(req: Request, res: Response) {
 export async function getContacts(req: Request, res: Response) {
   try {
     const status = req.query.status as string | undefined;
-    const page = parseInt((req.query.page as string) || "1", 10);
-    const limit = parseInt((req.query.limit as string) || "20", 10);
-    const skip = (page - 1) * limit;
+    if (status && !["NEW", "READ", "ARCHIVED"].includes(status)) {
+      throw new ApiError(400, "Invalid status. Must be one of: NEW, READ, ARCHIVED");
+    }
+    const { page, limit, skip } = parsePagination(req.query);
 
     const where = status ? { status: status as any } : {};
 

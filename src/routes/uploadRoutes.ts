@@ -11,17 +11,21 @@ import {
   proxyImage,
   debugR2Key,
 } from "../controllers/uploadController";
-import { authenticate } from "../middleware/auth";
+import { authenticate, authorize } from "../middleware/auth";
 
 const router = Router();
 
-// ─── Upload Routes (All Protected) ────────────────────────
+// ─── Upload Routes ──────────────────────────────────────────
 
-// Proxy image (for CORS - no auth needed)
+// Proxy image (for CORS - public, portfolio needs it)
 router.get("/proxy", proxyImage);
 
-// Debug R2 key lookup (no auth needed)
-router.get("/debug-key", debugR2Key);
+// Debug R2 key lookup (ADMIN only — discloses bucket keys)
+router.get("/debug-key", authenticate, authorize(["ADMIN"]), debugR2Key);
+
+// Mutations + listing (ADMIN only — R2 write/delete + presigned URLs)
+router.use(authenticate);
+router.use(authorize(["ADMIN"]));
 
 // List all files in R2
 router.get("/", authenticate, listFiles);

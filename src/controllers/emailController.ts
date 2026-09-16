@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { sendEmail, contactFormEmail, contactAutoReply, subscriberWelcomeEmail } from "../config/email";
-import { EMAIL_TEMPLATES, TemplateId } from "../config/emailTemplates";
+import { EMAIL_TEMPLATES, TemplateId, withTemplateDefaults, escapeRegExp } from "../config/emailTemplates";
 import { generateEmailWithAI, generateSubjectLines } from "../services/aiEmailGenerator";
 import { logEmail } from "../services/emailLogService";
 import prisma from "../config/db";
@@ -61,35 +61,8 @@ export async function previewTemplate(req: Request, res: Response) {
       throw new ApiError(404, "Template not found");
     }
 
-    // Generate preview with provided variables or defaults
-    const defaultVars: Record<string, any> = {
-      clientName: "John Smith",
-      clientCompany: "Acme Inc",
-      service: "build a modern web application",
-      message: "",
-      founderName: "Sarah",
-      startupName: "TechStartup",
-      pitch: "doing great work in the AI space.",
-      name: "John",
-      originalSubject: "our collaboration",
-      daysSince: 3,
-      projectName: "E-Commerce Platform",
-      scope: "Full stack development with React and Node.js",
-      timeline: "6-8 weeks",
-      budget: "$5,000 - $8,000",
-      nextSteps: [
-        "Schedule kickoff call to discuss requirements",
-        "Share brand guidelines and assets",
-        "Review and approve project timeline",
-        "Initial wireframes and design mockups",
-      ],
-      title: "Latest Updates from Rasel Hossain",
-      content: "<p>Here's what's new this month...</p>",
-      ctaText: "Read More",
-      ctaUrl: "https://raselhossain.dev/blog",
-    };
-
-    const mergedVars = { ...defaultVars, ...variables };
+    // Generate preview with provided variables over shared defaults
+    const mergedVars = withTemplateDefaults(variables);
     const html = template.generate(mergedVars as any);
 
     sendSuccess(res, {
@@ -123,17 +96,16 @@ export async function sendTemplateEmail(req: Request, res: Response) {
       throw new ApiError(404, "Template not found");
     }
 
-    const html = template.generate(variables || {} as any);
+    const mergedVars = withTemplateDefaults(variables);
+    const html = template.generate(mergedVars as any);
 
-    // Replace variables in subject
+    // Replace variables in subject (defaults merged so no ${placeholder} leaks)
     let subject = customSubject || template.subject;
-    if (variables) {
-      Object.entries(variables).forEach(([key, value]) => {
-        if (typeof value === "string") {
-          subject = subject.replace(new RegExp(`\\$\\{${key}\\}`, "g"), value);
-        }
-      });
-    }
+    Object.entries(mergedVars).forEach(([key, value]) => {
+      if (typeof value === "string") {
+        subject = subject.replace(new RegExp(`\\$\\{${escapeRegExp(key)}\\}`, "g"), value);
+      }
+    });
 
     const sent = await sendEmail({ to, subject, html });
 
@@ -210,9 +182,11 @@ export async function sendBulkEmail(req: Request, res: Response) {
     let failed = 0;
 
     for (const sub of subscribers) {
+      // sendEmail resolves false (never throws) on SMTP failure — count it.
       try {
-        await sendEmail({ to: sub.email, subject, html });
-        sent++;
+        const ok = await sendEmail({ to: sub.email, subject, html });
+        if (ok) sent++;
+        else failed++;
       } catch {
         failed++;
       }
@@ -254,22 +228,22 @@ export async function sendBulkTemplateEmail(req: Request, res: Response) {
     });
 
     let subject = customSubject || template.subject;
-    if (variables) {
-      Object.entries(variables).forEach(([key, value]) => {
-        if (typeof value === "string") {
-          subject = subject.replace(new RegExp(`\\$\\{${key}\\}`, "g"), value);
-        }
-      });
-    }
+    const mergedSubjectVars = withTemplateDefaults(variables);
+    Object.entries(mergedSubjectVars).forEach(([key, value]) => {
+      if (typeof value === "string") {
+        subject = subject.replace(new RegExp(`\\$\\{${escapeRegExp(key)}\\}`, "g"), value);
+      }
+    });
 
     let sent = 0;
     let failed = 0;
 
     for (const sub of subscribers) {
       try {
-        const html = template.generate(variables || {} as any);
-        await sendEmail({ to: sub.email, subject, html });
-        sent++;
+        const html = template.generate(mergedSubjectVars as any);
+        const ok = await sendEmail({ to: sub.email, subject, html });
+        if (ok) sent++;
+        else failed++;
       } catch {
         failed++;
       }

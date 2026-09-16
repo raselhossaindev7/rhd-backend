@@ -249,14 +249,26 @@ export async function getSystemInfo(_req: AuthRequest, res: Response) {
       r2Status = "error";
     }
 
-    // Active AI provider check (uses saved config, falls back to env)
+    // Active AI provider check (uses saved config, falls back to env).
+    // Hard 15s cap: a live testAiConnection can hang for minutes on a dead
+    // provider (180s timeout × retries), which used to stall the whole
+    // Settings page load. Timeout reports "timeout", never hangs.
     const aiCfg = await getAiConfig();
     let aiStatus = "disconnected";
     try {
-      const probe = await testAiConnection(aiCfg);
+      const probe = await Promise.race([
+        testAiConnection(aiCfg),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("ai-probe-timeout")), 15000)
+        ),
+      ]);
       aiStatus = probe.ok ? "connected" : "error";
-    } catch {
-      aiStatus = aiCfg.apiKey ? "error" : "disconnected";
+    } catch (err: any) {
+      if (err?.message === "ai-probe-timeout") {
+        aiStatus = "timeout";
+      } else {
+        aiStatus = aiCfg.apiKey ? "error" : "disconnected";
+      }
     }
 
     sendSuccess(res, {

@@ -28,8 +28,8 @@ export const AI_PROVIDER_DEFAULTS: Record<
 > = {
   ollama: {
     baseUrl: "https://ollama.com",
-    defaultModel: "minimax-m3:cloud",
-    suggestedModels: ["minimax-m3:cloud", "llama3.1:cloud", "qwen3:cloud", "deepseek-v3:cloud", "llama3.1", "qwen2.5"],
+    defaultModel: "minimax-m3",
+    suggestedModels: ["minimax-m3", "qwen3.5:397b", "deepseek-v4.1-flash", "glm-5.3-flash", "gpt-oss:120b"],
     keyLabel: "Ollama API Key",
     keyHint: "Ollama Cloud → API Keys (https://ollama.com/settings/keys). Local Ollama-তে key লাগে না।",
   },
@@ -151,11 +151,15 @@ export async function getAiConfig(): Promise<AiConfig> {
     // If DB has an empty API key (accidentally overwritten), fall back to env key
     const dbKey = map.ai_api_key ?? "";
     const apiKey = dbKey || fallback.apiKey;
+    const baseUrl = map.ai_base_url || fallback.baseUrl || AI_PROVIDER_DEFAULTS[safeProvider].baseUrl;
+    let model = map.ai_model || fallback.model || AI_PROVIDER_DEFAULTS[safeProvider].defaultModel;
+    // Heal retired Ollama Cloud names (e.g. qwen2.5 → qwen3.5:397b)
+    if (safeProvider === "ollama") model = normalizeOllamaModel(model, baseUrl);
     return {
       provider: safeProvider,
       apiKey,
-      model: map.ai_model || fallback.model || AI_PROVIDER_DEFAULTS[safeProvider].defaultModel,
-      baseUrl: map.ai_base_url || fallback.baseUrl || AI_PROVIDER_DEFAULTS[safeProvider].baseUrl,
+      model,
+      baseUrl,
     };
   } catch {
     // Table may not exist yet (before db push) — fall back to env
@@ -281,13 +285,33 @@ const OPENROUTER_FALLBACK_MODELS = [
 ];
 
 const OLLAMA_FALLBACK_MODELS = [
-  "minimax-m3:cloud",
-  "llama3.1:cloud",
-  "qwen3:cloud",
-  "deepseek-v3:cloud",
-  "llama3.1",
-  "qwen2.5",
+  "minimax-m3",
+  "qwen3.5:397b",
+  "deepseek-v4.1-flash",
+  "glm-5.3-flash",
+  "gpt-oss:120b",
 ];
+
+// Old Ollama Cloud names (retired 2026: `:cloud` suffix dropped, local-only
+// names never worked on Cloud). Remapped only when baseUrl is Cloud —
+// local Ollama keeps user model untouched.
+const OLLAMA_STALE_MODEL_MAP: Record<string, string> = {
+  "minimax-m3:cloud": "minimax-m3",
+  "llama3.1:cloud": "minimax-m3",
+  "qwen3:cloud": "qwen3.5:397b",
+  "deepseek-v3:cloud": "deepseek-v4.1-flash",
+  "llama3.1": "minimax-m3",
+  "qwen2.5": "qwen3.5:397b",
+};
+
+function isLocalOllamaBase(baseUrl: string): boolean {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d/.test(baseUrl || "");
+}
+
+function normalizeOllamaModel(model: string, baseUrl: string): string {
+  if (!model || isLocalOllamaBase(baseUrl)) return model;
+  return OLLAMA_STALE_MODEL_MAP[model.trim()] || model;
+}
 
 // Groq / Cerebras / Gemini fall back through their own suggested lists
 // (requested model first). Unknown/stale names 404 → instant rotate.
@@ -330,7 +354,9 @@ async function ollamaChat(cfg: AiConfig, messages: AiMessage[], opts: AiChatOpti
   if (opts.maxTokens) baseBody.options = { num_predict: opts.maxTokens };
 
   let useJsonMode = !!opts.jsonMode;
-  const tryModels = buildTryModels("ollama", cfg.model);
+  // Heal stale names even when caller passes model directly (e.g. Test button)
+  const effectiveModel = normalizeOllamaModel(cfg.model, base);
+  const tryModels = buildTryModels("ollama", effectiveModel);
   let modelIdx = 0;
   let currentModel = tryModels[modelIdx]!;
 
@@ -591,15 +617,45 @@ export async function listProviderModels(
   const provider = AI_PROVIDERS.includes(input.provider) ? input.provider : "ollama";
   const defaults = AI_PROVIDER_DEFAULTS[provider];
   const baseUrl = (input.baseUrl ?? "").trim() || defaults.baseUrl;
+  // UI shows max 5 FREE models only — keep payload small & dynamic
+  const MAX_FREE_MODELS = 5;
   const fallback = {
-    models: defaults.suggestedModels.map((id) => ({ id, free: provider !== "openrouter" })),
+    models: defaults.suggestedModels.slice(0, MAX_FREE_MODELS).map((id) => ({ id, free: true })),
     recommended: (input.model ?? "").trim() || defaults.defaultModel,
     live: false,
   };
 
   try {
-    // Ollama Cloud has no public model catalog — use static list
-    if (provider === "ollama") return fallback;
+    // Ollama: /api/tags is public on Cloud and works on local too → live list
+    if (provider === "ollama") {
+      try {
+        const tagsRes = await fetch(`${baseUrl.replace(/\/$/, "")}/api/tags`, {
+          signal: AbortSignal.timeout(20000),
+        });
+        if (tagsRes.ok) {
+          const tagsData: any = await tagsRes.json();
+          const ids: string[] = (tagsData.models || [])
+            .map((m: any) => String(m.name || m.model || ""))
+            .filter(Boolean);
+          if (ids.length) {
+            const sorted = [...ids].sort((a, b) => {
+              if (a === defaults.defaultModel) return -1;
+              if (b === defaults.defaultModel) return 1;
+              return 0;
+            });
+            const top = sorted.slice(0, MAX_FREE_MODELS);
+            return {
+              models: top.map((id) => ({ id, free: true })),
+              recommended: top.includes(defaults.defaultModel) ? defaults.defaultModel : top[0],
+              live: true,
+            };
+          }
+        }
+      } catch {
+        // fall through to static list
+      }
+      return fallback;
+    }
 
     if (provider === "gemini") {
       const key = await resolveApiKey(provider, input.apiKey);
@@ -616,9 +672,18 @@ export async function listProviderModels(
         // skip speech/image-only variants for blog generation
         .filter((id: string) => !/tts|image|transcribe|lyria|robotics|computer-use|deep-research|antigravity/i.test(id));
       if (!ids.length) return fallback;
+      // Dynamic free list: default model first, then flash variants, max 5
+      const sorted = [...ids].sort((a, b) => {
+        if (a === defaults.defaultModel) return -1;
+        if (b === defaults.defaultModel) return 1;
+        const aFlash = /flash/i.test(a) ? 0 : 1;
+        const bFlash = /flash/i.test(b) ? 0 : 1;
+        return aFlash - bFlash;
+      });
+      const top = sorted.slice(0, MAX_FREE_MODELS);
       return {
-        models: ids.map((id) => ({ id, free: true })),
-        recommended: ids.includes(defaults.defaultModel) ? defaults.defaultModel : ids[0],
+        models: top.map((id) => ({ id, free: true })),
+        recommended: top.includes(defaults.defaultModel) ? defaults.defaultModel : top[0],
         live: true,
       };
     }
@@ -644,15 +709,18 @@ export async function listProviderModels(
       }
       return { id, free };
     }).filter((m) => m.id);
-    // Free models first
+    // Free models first, then slice to max 5 FREE only
     models.sort((a, b) => Number(b.free) - Number(a.free));
+    const freeOnly = models.filter((m) => m.free).slice(0, MAX_FREE_MODELS);
+    // No free model found live → fall back to curated static free list
+    if (!freeOnly.length) return fallback;
     const recommended =
-      (input.model ?? "").trim() && models.some((m) => m.id === (input.model ?? "").trim())
+      (input.model ?? "").trim() && freeOnly.some((m) => m.id === (input.model ?? "").trim())
         ? (input.model ?? "").trim()
-        : models.some((m) => m.id === defaults.defaultModel)
+        : freeOnly.some((m) => m.id === defaults.defaultModel)
           ? defaults.defaultModel
-          : (models.find((m) => m.free)?.id || models[0].id);
-    return { models, recommended, live: true };
+          : freeOnly[0].id;
+    return { models: freeOnly, recommended, live: true };
   } catch {
     return fallback;
   }

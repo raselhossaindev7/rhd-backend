@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import prisma, { safeQuery } from "../config/db";
-import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
+import { ApiError, sendSuccess, sendError, slugify, parsePagination } from "../utils/helpers";
 import { generateTopics, saveTopics } from "../services/aiTopicGenerator";
 import { getBlogDemandWithGsc } from "../services/demandSignals";
 
@@ -76,9 +76,11 @@ export function getGenerationStatus() {
 export async function getTopics(req: Request, res: Response) {
   try {
     const status = req.query.status as string | undefined;
-    const page = parseInt((req.query.page as string) || "1", 10);
-    const limit = parseInt((req.query.limit as string) || "20", 10);
-    const skip = (page - 1) * limit;
+    const VALID_STATUSES = ["PENDING", "GENERATING", "COMPLETED", "FAILED", "PUBLISHED"];
+    if (status && !VALID_STATUSES.includes(status)) {
+      throw new ApiError(400, `Invalid status. Must be one of: ${VALID_STATUSES.join(", ")}`);
+    }
+    const { page, limit, skip } = parsePagination(req.query);
 
     const where: any = {};
     if (status && typeof status === "string") where.status = status;
@@ -148,6 +150,9 @@ export async function updateTopic(req: Request, res: Response) {
 
     const existing = await prisma.topic.findUnique({ where: { id } });
     if (!existing) throw new ApiError(404, "Topic not found");
+    if (status !== undefined && !["PENDING", "GENERATING", "COMPLETED", "FAILED", "PUBLISHED"].includes(status)) {
+      throw new ApiError(400, "Invalid status");
+    }
 
     const topic = await prisma.topic.update({
       where: { id },
@@ -201,7 +206,7 @@ export async function deleteTopic(req: Request, res: Response) {
 
 export async function generateTopicSuggestions(req: Request, res: Response) {
   try {
-    const count = parseInt((req.query.count as string) || "5", 10);
+    const count = parseInt((req.query.count as string) || "5", 10) || 5;
     const limitedCount = Math.min(Math.max(count, 1), 10);
 
     // Real Google demand first (GSC → Trends → Autocomplete); the generator
@@ -230,9 +235,12 @@ export async function generatePost(req: Request, res: Response) {
   // inside the HTTP cycle trips gateway timeouts (504 on Cloudflare/Render
   // ~100s). So we validate + enqueue synchronously, respond 202 at once,
   // and run the heavy work detached. Clients poll topics/stats for completion.
+  // NOTE: flag is claimed SYNCHRONOUSLY (no await between check and set)
+  // so two concurrent requests (double-click, manual+cron) can't both pass.
   if (generationInFlight) {
     return sendError(res, new ApiError(409, "A generation is already in progress — try again in a minute"));
   }
+  generationInFlight = true;
   try {
     const { topicId } = req.body;
 
@@ -258,7 +266,6 @@ export async function generatePost(req: Request, res: Response) {
       data: { status: "GENERATING", attempts: { increment: 1 } },
     });
 
-    generationInFlight = true;
     const target = { id: topic.id, title: topic.title, category: topic.category, keywords: topic.keywords, description: topic.description };
     setProgress({
       active: true, topicId: target.id, topicTitle: target.title,
@@ -303,6 +310,8 @@ export async function generatePost(req: Request, res: Response) {
       202
     );
   } catch (error) {
+    // Validation failed before the background job started — release the flag
+    generationInFlight = false;
     sendError(res, error as Error);
   }
 }

@@ -37,6 +37,12 @@ export async function sendEmail(options: EmailOptions): Promise<boolean> {
 
 // ─── Email Templates ──────────────────────────────────────
 
+// Strip CR/LF so user input can't inject extra email headers (nodemailer
+// header-injection CVEs + contact form is a public endpoint).
+function headerSafe(value: string): string {
+  return String(value || "").replace(/[\r\n]+/g, " ").trim().slice(0, 200);
+}
+
 export function contactFormEmail(data: {
   name: string;
   email: string;
@@ -45,8 +51,8 @@ export function contactFormEmail(data: {
 }): EmailOptions {
   return {
     to: config.email.user,
-    subject: `New Contact: ${data.name} — ${data.type}`,
-    replyTo: data.email,
+    subject: `New Contact: ${headerSafe(data.name)} — ${headerSafe(data.type)}`,
+    replyTo: headerSafe(data.email),
     html: `
       <!DOCTYPE html>
       <html>

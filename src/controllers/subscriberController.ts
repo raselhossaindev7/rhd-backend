@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
-import { ApiError, sendSuccess, sendError } from "../utils/helpers";
+import { ApiError, sendSuccess, sendError, parsePagination } from "../utils/helpers";
 
 export async function subscribe(req: Request, res: Response) {
   try {
@@ -49,12 +49,18 @@ export async function unsubscribe(req: Request, res: Response) {
 
 export async function getSubscribers(req: Request, res: Response) {
   try {
+    // Paginated (previously dumped the whole table in one response)
+    const { page, limit, skip } = parsePagination(req.query, 100, 500);
+    const where = { active: true };
     const subscribers = await prisma.subscriber.findMany({
-      where: { active: true },
+      where,
       orderBy: { createdAt: "desc" },
+      skip,
+      take: limit,
     });
+    const total = await prisma.subscriber.count({ where });
 
-    sendSuccess(res, { subscribers, total: subscribers.length });
+    sendSuccess(res, { subscribers, total, pagination: { total, page, pages: Math.ceil(total / limit) } });
   } catch (error) {
     sendError(res, error as Error);
   }

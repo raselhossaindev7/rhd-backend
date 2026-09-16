@@ -7,7 +7,7 @@ import { z } from "zod";
 const router = Router();
 
 const emailSchema = z.object({
-  email: z.string().email("Invalid email"),
+  email: z.string().email("Invalid email").max(254),
 });
 
 // Public

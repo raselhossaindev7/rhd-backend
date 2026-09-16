@@ -67,6 +67,14 @@ app.use(
 );
 
 // ─── Rate Limiting ────────────────────────────────────────
+// IMPORTANT: with `trust proxy: true`, req.ip is the leftmost X-Forwarded-For
+// entry — attacker-spoofable. Behind Cloudflare, CF-Connecting-IP is the
+// authoritative client IP (Cloudflare overwrites it), so key on that first.
+const clientIp = (req: express.Request): string => {
+  const cfIp = req.headers["cf-connecting-ip"];
+  if (typeof cfIp === "string" && cfIp.trim()) return cfIp.trim();
+  return req.ip || req.socket.remoteAddress || "unknown";
+};
 const isLocalhost = (ip: string | undefined) =>
   !ip || ip === "::1" || ip === "127.0.0.1" || ip.startsWith("::ffff:127.") || ip.startsWith("::ffff:192.168.");
 
@@ -75,8 +83,7 @@ const limiter = rateLimit({
   max: config.rateLimitMax,
   standardHeaders: true,
   legacyHeaders: false,
-  // Use X-Forwarded-For aware IP (requires trust proxy = true)
-  keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
+  keyGenerator: clientIp,
   handler: (_req, res) => {
     res.status(429).json({
       success: false,
@@ -96,7 +103,7 @@ const authLimiter = rateLimit({
   max: 20, // 20 attempts per 15 min — protects brute force but allows typos
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => req.ip || req.socket.remoteAddress || "unknown",
+  keyGenerator: clientIp,
   handler: (_req, res) => {
     res.status(429).json({
       success: false,
@@ -109,6 +116,22 @@ app.use("/api/", limiter);
 app.use("/api/auth/login", authLimiter);
 app.use("/api/auth/register", authLimiter);
 app.use("/api/auth/forgot-password", authLimiter);
+
+// Public AI chat burns provider credits per request — strict per-IP budget
+const chatLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: clientIp,
+  handler: (_req, res) => {
+    res.status(429).json({
+      success: false,
+      message: "Chat limit reached, try again in a few minutes",
+    });
+  },
+});
+app.use("/api/chat", chatLimiter);
 
 // ─── Body Parsing ─────────────────────────────────────────
 app.use(express.json({ limit: "10mb" }));

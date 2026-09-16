@@ -77,8 +77,10 @@ export async function trackPageView(req: Request, res: Response) {
 export async function getAnalytics(req: Request, res: Response) {
   try {
     const { days = "30" } = req.query;
+    const rawDays = parseInt(days as string, 10) || 30;
+    const safeDays = Math.min(Math.max(rawDays, 1), 365);
     const since = new Date();
-    since.setDate(since.getDate() - parseInt(days as string));
+    since.setDate(since.getDate() - safeDays);
 
     // NOTE: sequential reads, NOT prisma.$transaction([...]) and NOT
     // Promise.all. Each query checks a pooled connection out briefly and

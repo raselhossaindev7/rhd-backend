@@ -2,8 +2,9 @@ import cron from "node-cron";
 import { runScheduledGeneration, runMaintenance } from "../controllers/scheduleController";
 
 // ─── Blog Autopilot (zero human input) ───────────────────
-// Daily post:  6:00 PM Asia/Dhaka (cron "0 12 * * *", evaluated in the
-//              Asia/Dhaka tz below, i.e. 12:00 UTC = 18:00 BST)
+// Daily post:  6:00 PM Asia/Dhaka ("0 18 * * *", evaluated IN the
+//              Asia/Dhaka tz below — node-cron evaluates the expression
+//              in the given timezone, NOT in UTC).
 // Maintenance: every 15 min — reclaims stuck GENERATING, revives FAILED
 //              with backoff, refills the topic buffer. Cheap DB queries,
 //              AI only fires when the buffer is actually low.
@@ -19,9 +20,8 @@ export function startBlogScheduler() {
     return;
   }
 
-  // Schedule for 6:00 PM daily (Asia/Dhaka = UTC+6, so 12:00 UTC)
-  // Using UTC time: 12:00 UTC = 18:00 BST (Bangladesh Standard Time)
-  scheduledTask = cron.schedule("0 12 * * *", async () => {
+  // 6:00 PM daily Asia/Dhaka time (expression is evaluated in that tz)
+  scheduledTask = cron.schedule("0 18 * * *", async () => {
     if (isRunning) {
       console.log("[CRON] Previous generation still running, skipping...");
       return;

@@ -13,10 +13,10 @@ import { z } from "zod";
 const router = Router();
 
 const contactSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  email: z.string().email("Invalid email"),
-  type: z.string().optional(),
-  message: z.string().min(10, "Message must be at least 10 characters"),
+  name: z.string().min(1, "Name is required").max(100),
+  email: z.string().email("Invalid email").max(254),
+  type: z.string().max(100).optional(),
+  message: z.string().min(10, "Message must be at least 10 characters").max(5000),
 });
 
 const statusSchema = z.object({

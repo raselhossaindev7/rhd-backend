@@ -138,6 +138,12 @@ export async function bulkAction(req: Request, res: Response) {
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       throw new ApiError(400, "Email IDs are required");
     }
+    if (!["read", "trash", "archive", "delete"].includes(action)) {
+      throw new ApiError(400, "Invalid action. Must be one of: read, trash, archive, delete");
+    }
+    if (ids.length > 200) {
+      throw new ApiError(400, "Too many IDs at once (max 200)");
+    }
 
     for (const id of ids) {
       switch (action) {

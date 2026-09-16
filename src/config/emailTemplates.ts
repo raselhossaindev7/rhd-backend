@@ -560,3 +560,44 @@ export const EMAIL_TEMPLATES = {
 } as const;
 
 export type TemplateId = keyof typeof EMAIL_TEMPLATES;
+
+// ─── Shared variable defaults ────────────────────────────
+// Single source of truth for preview + send paths: merging these first
+// guarantees a missing variable never leaks a raw `${placeholder}` into
+// a recipient's subject line or body.
+export const TEMPLATE_DEFAULT_VARS: Record<string, any> = {
+  clientName: "John Smith",
+  clientCompany: "Acme Inc",
+  service: "build a modern web application",
+  message: "",
+  founderName: "Sarah",
+  startupName: "TechStartup",
+  pitch: "doing great work in the AI space.",
+  name: "John",
+  originalSubject: "our collaboration",
+  daysSince: 3,
+  projectName: "E-Commerce Platform",
+  scope: "Full stack development with React and Node.js",
+  timeline: "6-8 weeks",
+  budget: "$5,000 - $8,000",
+  nextSteps: [
+    "Schedule kickoff call to discuss requirements",
+    "Share brand guidelines and assets",
+    "Review and approve project timeline",
+    "Initial wireframes and design mockups",
+  ],
+  title: "Latest Updates from Rasel Hossain",
+  content: "<p>Here's what's new this month...</p>",
+  ctaText: "Read More",
+  ctaUrl: "https://raselhossain.dev/blog",
+};
+
+/** Merge caller vars over defaults (never mutates either). */
+export function withTemplateDefaults(variables?: Record<string, any>): Record<string, any> {
+  return { ...TEMPLATE_DEFAULT_VARS, ...(variables || {}) };
+}
+
+/** Escape a string for use inside new RegExp(). */
+export function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

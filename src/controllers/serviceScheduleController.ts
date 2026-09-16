@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import prisma, { safeQuery } from "../config/db";
-import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
+import { ApiError, sendSuccess, sendError, slugify, parsePagination } from "../utils/helpers";
 import { generateServiceTopics, saveServiceTopics } from "../services/aiServiceTopicGenerator";
 import { getServiceDemandWithGsc } from "../services/demandSignals";
 import { generateService, ServiceData } from "../services/aiServiceGenerator";
@@ -81,9 +81,11 @@ export function getServiceGenerationStatus() {
 export async function getServiceTopics(req: Request, res: Response) {
   try {
     const status = req.query.status as string | undefined;
-    const page = parseInt((req.query.page as string) || "1", 10);
-    const limit = parseInt((req.query.limit as string) || "20", 10);
-    const skip = (page - 1) * limit;
+    const VALID_STATUSES = ["PENDING", "GENERATING", "COMPLETED", "FAILED", "PUBLISHED"];
+    if (status && !VALID_STATUSES.includes(status)) {
+      throw new ApiError(400, `Invalid status. Must be one of: ${VALID_STATUSES.join(", ")}`);
+    }
+    const { page, limit, skip } = parsePagination(req.query);
 
     const where: any = {};
     if (status && typeof status === "string") where.status = status;
@@ -153,6 +155,9 @@ export async function updateServiceTopic(req: Request, res: Response) {
 
     const existing = await prisma.serviceTopic.findUnique({ where: { id } });
     if (!existing) throw new ApiError(404, "Service topic not found");
+    if (status !== undefined && !["PENDING", "GENERATING", "COMPLETED", "FAILED", "PUBLISHED"].includes(status)) {
+      throw new ApiError(400, "Invalid status");
+    }
 
     const topic = await prisma.serviceTopic.update({
       where: { id },
@@ -205,7 +210,7 @@ export async function deleteServiceTopic(req: Request, res: Response) {
 
 export async function generateServiceTopicSuggestions(req: Request, res: Response) {
   try {
-    const count = parseInt((req.query.count as string) || "3", 10);
+    const count = parseInt((req.query.count as string) || "3", 10) || 3;
     const limitedCount = Math.min(Math.max(count, 1), 10);
 
     // Real Google demand first (GSC → Trends → Autocomplete); the generator
@@ -232,9 +237,11 @@ export async function generateServiceTopicSuggestions(req: Request, res: Respons
 export async function generateServiceFromTopic(req: Request, res: Response) {
   // Same detached pattern as blog generatePost: validate + enqueue,
   // respond 202 at once, heavy work runs in background (gateway ~100s).
+  // Flag claimed synchronously (no await between check and set) — see blog.
   if (generationInFlight) {
     return sendError(res, new ApiError(409, "A service generation is already in progress — try again in a minute"));
   }
+  generationInFlight = true;
   try {
     const { topicId } = req.body;
 
@@ -260,7 +267,6 @@ export async function generateServiceFromTopic(req: Request, res: Response) {
       data: { status: "GENERATING", attempts: { increment: 1 } },
     });
 
-    generationInFlight = true;
     const target = { id: topic.id, title: topic.title, category: topic.category, keywords: topic.keywords, description: topic.description };
     setProgress({
       active: true, topicId: target.id, topicTitle: target.title,
@@ -306,6 +312,8 @@ export async function generateServiceFromTopic(req: Request, res: Response) {
       202
     );
   } catch (error) {
+    // Validation failed before the background job started — release the flag
+    generationInFlight = false;
     sendError(res, error as Error);
   }
 }

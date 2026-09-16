@@ -9,12 +9,13 @@ import {
   listAiModels,
   testAiSettings,
 } from "../controllers/settingsController";
-import { authenticate } from "../middleware/auth";
+import { authenticate, authorize } from "../middleware/auth";
 
 const router = Router();
 
-// All routes require authentication
+// All routes require admin authentication (exposes API keys + system info)
 router.use(authenticate);
+router.use(authorize(["ADMIN"]));
 
 // Profile
 router.get("/profile", getProfile);

@@ -61,11 +61,12 @@ export async function uploadImage(req: AuthRequest, res: Response) {
       throw new ApiError(400, "Image must be less than 5MB");
     }
 
+    // Clamp user-controlled transform params (sharp throws 500 on garbage)
+    const width = Math.min(Math.max(parseInt(req.query.width as string) || 1200, 16), 2000);
+    const quality = Math.min(Math.max(parseInt(req.query.quality as string) || 80, 1), 100);
+
     // Process image
-    const processed = await processImage(file.buffer, {
-      width: parseInt(req.query.width as string) || 1200,
-      quality: parseInt(req.query.quality as string) || 80,
-    });
+    const processed = await processImage(file.buffer, { width, quality });
 
     // Generate key
     const folder = (req.query.folder as string) || "uploads";
@@ -77,7 +78,7 @@ export async function uploadImage(req: AuthRequest, res: Response) {
     sendSuccess(res, {
       url,
       key,
-      width: parseInt(req.query.width as string) || 1200,
+      width,
       size: processed.length,
     }, 201);
   } catch (error) {
@@ -128,12 +129,11 @@ export async function uploadMultipleImages(req: AuthRequest, res: Response) {
     }
 
     const folder = (req.query.folder as string) || "uploads";
+    const width = Math.min(Math.max(parseInt(req.query.width as string) || 1200, 16), 2000);
+    const quality = Math.min(Math.max(parseInt(req.query.quality as string) || 80, 1), 100);
     const results = await Promise.all(
       files.map(async (file) => {
-        const processed = await processImage(file.buffer, {
-          width: parseInt(req.query.width as string) || 1200,
-          quality: parseInt(req.query.quality as string) || 80,
-        });
+        const processed = await processImage(file.buffer, { width, quality });
         const key = generateKey(folder, file.originalname);
         const url = await uploadToR2(processed, key, "image/webp");
         return { url, key, size: processed.length };
@@ -356,8 +356,8 @@ export async function proxyImage(req: AuthRequest, res: Response) {
     const statusCode = error?.$metadata?.httpStatusCode;
 
     if (statusCode === 404 || error.Code === "NoSuchKey" || error.name === "NoSuchKey") {
-      console.warn("Proxy 404 — key not in R2, redirecting to original URL:", { key, url });
-      return res.redirect(302, url);
+      // No open redirect to the attacker-supplied URL — just 404.
+      return sendError(res, new ApiError(404, "Image not found"));
     }
 
     console.error("Proxy image error:", {
