@@ -55,6 +55,11 @@ Content Must Be:
 - Outcome-focused — "you'll get X result" not "I use Y technology"
 - Specific — real timelines, real deliverables, real process steps
 - Helpful — answer questions before buyers ask them
+- Always close with a buyer CTA naming the exact contact channels:
+  Email raselhossaindev7@gmail.com, phone/WhatsApp/Telegram +8801757220402,
+  WhatsApp chat https://wa.me/8801757220402 (Markdown links:
+  [Email](mailto:raselhossaindev7@gmail.com),
+  [WhatsApp](https://wa.me/8801757220402))
 
 SEO Requirements:
 - Keyword-rich but natural headings and copy
@@ -149,6 +154,8 @@ Requirements:
 - First paragraph MUST state the outcome in 40-60 words (who it's for + result)
 - Concrete deliverables and process feel — no generic filler
 - Primary keyword naturally in first 100 words, one H2, and closing
+- Final section MUST be a contact CTA with: [Email](mailto:raselhossaindev7@gmail.com),
+  [WhatsApp](https://wa.me/8801757220402), phone/Telegram +8801757220402
 
 Return ONLY the Markdown overview. No JSON, no code fences around it.`;
 

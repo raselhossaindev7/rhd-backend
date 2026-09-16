@@ -35,7 +35,8 @@ Notable Projects:
 
 Contact:
 - Email: raselhossaindev7@gmail.com
-- Phone: 01757220402
+- Phone / WhatsApp / Telegram: +8801757220402
+- WhatsApp chat: https://wa.me/8801757220402
 - Website: raselhossain.dev
 - GitHub: github.com/raselhossaindev7
 - LinkedIn: linkedin.com/in/rasel-hossen-32b51915b

@@ -113,7 +113,12 @@ export function buildThumbnailPrompt(
   return (
     `${title}, ${category} service theme, ${categoryVisual(category)}, ` +
     `${preset.suffix}, ultra detailed, 8K, sharp focus, highly detailed, vibrant, ` +
-    `generic tech icons, no text, no words, no letters, no watermark, no trademarked brand names, no people faces, no person`
+    // AI-rendered text always comes out garbled — the real title is overlaid
+    // later with sharp (crisp vector text), so the background must stay
+    // text-free with a dark empty lower third for the overlay.
+    `generic tech icons, absolutely no text, no words, no letters, no typography anywhere, ` +
+    `no watermark, no trademarked brand names, no people faces, no person, ` +
+    `lower third dark and empty for title overlay`
   );
 }
 
@@ -187,6 +192,64 @@ async function toCoverWebp(input: Buffer): Promise<Buffer> {
   }
 }
 
+// ─── Crisp title overlay (the actual fix for garbled AI text) ──
+// Image models can't spell — any letters they "write" come out broken.
+// So the background stays text-free (see prompt) and the real title is
+// composited here as vector text: always sharp, always readable.
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+export function wrapTitle(title: string, perLine = 26, maxLines = 2): string[] {
+  const words = String(title || "").split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const next = cur ? cur + " " + w : w;
+    if (next.length > perLine && cur) {
+      lines.push(cur);
+      cur = w;
+      if (lines.length >= maxLines) break;
+    } else {
+      cur = next;
+    }
+  }
+  if (cur && lines.length < maxLines) lines.push(cur);
+  return lines.map((l) => (l.length > 44 ? l.slice(0, 41) + "..." : l));
+}
+
+export async function overlayTitle(input: Buffer, title: string): Promise<Buffer> {
+  const lines = wrapTitle(title);
+  if (!lines.length) return input;
+  const lineHeight = 56;
+  const padTop = 52;
+  const bannerH = lines.length * lineHeight + padTop + 28;
+  const y0 = HEIGHT - bannerH;
+  const texts = lines
+    .map(
+      (l, i) =>
+        `<text x="60" y="${y0 + padTop + i * lineHeight}" font-family="sans-serif" font-size="46" font-weight="bold" fill="#ffffff">${escapeXml(l)}</text>`
+    )
+    .join("");
+  const svg =
+    `<svg width="${WIDTH}" height="${HEIGHT}" xmlns="http://www.w3.org/2000/svg">` +
+    `<defs><linearGradient id="tb" x1="0" y1="0" x2="0" y2="1">` +
+    `<stop offset="0" stop-color="black" stop-opacity="0"/>` +
+    `<stop offset="1" stop-color="black" stop-opacity="0.72"/>` +
+    `</linearGradient></defs>` +
+    `<rect x="0" y="${y0}" width="${WIDTH}" height="${bannerH}" fill="url(#tb)"/>` +
+    texts +
+    `</svg>`;
+  return sharp(input)
+    .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
+    .webp({ quality: 82 })
+    .toBuffer();
+}
+
 export interface GeneratedThumbnail {
   url: string;
   source: "hf-flux" | "pollinations";
@@ -222,9 +285,16 @@ export async function generateServiceThumbnail(
 
   try {
     const webp = await toCoverWebp(bytes);
+    // Crisp readable title — overlay must never fail the pipeline.
+    let final = webp;
+    try {
+      final = await overlayTitle(webp, title);
+    } catch (err) {
+      console.warn("[THUMBNAIL] Title overlay failed, using plain cover:", (err as Error)?.message || err);
+    }
     const key = `services/thumbnails/${slugify(title).slice(0, 60) || "service"}-${Date.now()}.webp`;
-    const url = await uploadToR2(webp, key, "image/webp");
-    console.log(`[THUMBNAIL] Cover ready via ${source}: ${url} (${Math.round(webp.length / 1024)}KB)`);
+    const url = await uploadToR2(final, key, "image/webp");
+    console.log(`[THUMBNAIL] Cover ready via ${source}: ${url} (${Math.round(final.length / 1024)}KB)`);
     return { url, source, prompt, style };
   } catch (err) {
     console.warn("[THUMBNAIL] R2 upload failed:", (err as Error)?.message || err);
@@ -259,9 +329,15 @@ export async function generateBlogThumbnail(
 
   try {
     const webp = await toCoverWebp(bytes);
+    let final = webp;
+    try {
+      final = await overlayTitle(webp, title);
+    } catch (err) {
+      console.warn("[BLOG THUMB] Title overlay failed, using plain cover:", (err as Error)?.message || err);
+    }
     const key = `blog/thumbnails/${slugify(title).slice(0, 60) || "blog"}-${Date.now()}.webp`;
-    const url = await uploadToR2(webp, key, "image/webp");
-    console.log(`[BLOG THUMB] Cover ready via ${source}: ${url} (${Math.round(webp.length / 1024)}KB)`);
+    const url = await uploadToR2(final, key, "image/webp");
+    console.log(`[BLOG THUMB] Cover ready via ${source}: ${url} (${Math.round(final.length / 1024)}KB)`);
     return { url, source, prompt, style };
   } catch (err) {
     console.warn("[BLOG THUMB] R2 upload failed:", (err as Error)?.message || err);

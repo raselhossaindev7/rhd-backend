@@ -72,6 +72,14 @@ E-E-A-T (experience signals that rank and get cited):
 - Prefer concrete outcomes ("reduced build time from 9min to 90s") over
   generic claims ("much faster")
 
+Contact (always close with this CTA block, exact links):
+- Email: raselhossaindev7@gmail.com
+- Phone / WhatsApp / Telegram: +8801757220402
+- WhatsApp chat link: https://wa.me/8801757220402
+- End every article with a "Let's Work Together" section containing these
+  contact links as Markdown ([Email](mailto:raselhossaindev7@gmail.com),
+  [WhatsApp](https://wa.me/8801757220402), phone +8801757220402)
+
 Content Structure:
 - Para 1: direct 40-60 word answer to the core question (snippet-ready, no preamble)
 - Para 2-3: human hook — relatable story, why it matters, what the reader will gain
@@ -175,6 +183,8 @@ Requirements:
 - H2 headings phrased as questions where natural; use transition words and smooth flow
 - Helpful, informative, valuable — original insights from Rasel's professional voice, never robotic or generic
 - Include primary keyword naturally in first 100 words, one H2, and conclusion; avoid keyword stuffing
+- Close with a "Let's Work Together" H2: 2-3 line CTA + contact links
+  ([Email](mailto:raselhossaindev7@gmail.com), [WhatsApp](https://wa.me/8801757220402), +8801757220402)
 
 Return ONLY the Markdown article. No JSON, no code fences around it.`;
 

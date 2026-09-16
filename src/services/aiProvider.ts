@@ -175,11 +175,20 @@ export async function saveAiConfig(input: Partial<AiConfig> & { provider: AiProv
   const current = await getAiConfig();
   const inputKey = (input.apiKey ?? "").trim();
   const apiKey = inputKey || current.apiKey || "";
+  let baseInput = (input.baseUrl ?? "").trim();
+  // Provider switch with a stale Base URL carried over from the old provider
+  // (e.g. gemini + https://openrouter.ai/api/v1 → every call 401s at the
+  // wrong host). If it exactly matches the OLD provider's default, drop it
+  // so the new provider's default applies. Custom URLs (local Ollama etc.)
+  // are always preserved.
+  if (provider !== current.provider && baseInput === AI_PROVIDER_DEFAULTS[current.provider].baseUrl) {
+    baseInput = "";
+  }
   const next: AiConfig = {
     provider,
     apiKey,
     model: (input.model ?? "").trim() || defaults.defaultModel,
-    baseUrl: (input.baseUrl ?? "").trim() || defaults.baseUrl,
+    baseUrl: baseInput || defaults.baseUrl,
   };
 
   const entries: Record<string, string> = {
