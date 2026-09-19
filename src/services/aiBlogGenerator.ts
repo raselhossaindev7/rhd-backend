@@ -335,20 +335,30 @@ ${article.slice(0, 800)}`;
   }
   console.log(`[AI BLOG GENERATOR] Cover: ${coverSource}`);
 
-  // Add inline images to content if not present
+  // Add inline images to content if not present. Alt text is derived
+  // from the post title + image keywords — never generic "Illustration",
+  // which wastes image-search relevance and hurts accessibility.
   let processedContent = parsed.content || "";
   if (images.length > 1 && !processedContent.includes("![")) {
     const paragraphs = processedContent.split("\n\n");
+    const imgAlt = (img: { url?: string; alt?: string }, fallback: string) => {
+      const a = (img.alt || "").trim();
+      // Stock-source alts are often generic ("Illustration", "Photo") —
+      // prefer a title-derived descriptive alt for SEO + a11y.
+      return /^(illustration|example|photo|image)\b/i.test(a) || !a
+        ? `${title} — ${fallback}`
+        : a;
+    };
     const mdImage = (img: { url?: string; alt?: string; credit?: string }) =>
       img.credit
         ? `![${img.alt || "Illustration"}](${img.url || ""} "${img.credit.replace(/"/g, "'")}")`
         : `![${img.alt || "Illustration"}](${img.url || ""})`;
-    const image1 = mdImage({ ...images[1], alt: images[1]?.alt || "Illustration" });
+    const image1 = mdImage({ ...images[1], alt: imgAlt(images[1] || {}, imageKeywords || "illustration") });
     if (paragraphs.length > 3) {
       paragraphs.splice(3, 0, image1);
     }
     if (images.length > 2) {
-      const image2 = mdImage({ ...images[2], alt: images[2]?.alt || "Example" });
+      const image2 = mdImage({ ...images[2], alt: imgAlt(images[2] || {}, "example") });
       if (paragraphs.length > 6) {
         paragraphs.splice(6, 0, image2);
       }

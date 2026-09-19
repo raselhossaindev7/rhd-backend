@@ -48,7 +48,8 @@ Rules:
 7. Focus on trending topics that buyers actually search for in 2026
 8. Each service must solve a real problem — not just list technologies
 9. Return ONLY valid JSON array, no markdown or extra text
-10. Each topic must have: title, category, keywords (3-5), description (1-2 sentences)`;
+10. Each topic must have: title, category, keywords (3-5), description (1-2 sentences)
+11. keywords[0] MUST be the single primary buyer keyword; end every description with [Intent: commercial] (or [Intent: transactional] for hire/buy-angled ideas)`;
 
 export interface ServiceTopicDemand {
   /** Real Google queries (US) — proven buyer intent, not guesses. */
@@ -102,7 +103,8 @@ Generate ${count} offerings that:
 2. Solve a painful, well-defined client problem in 2026
 3. Are clearly sellable (buyer + outcome obvious from the title)
 4. Have good SEO / buyer-intent potential
-${demandQueries.length ? `5. Base AT LEAST HALF the ideas on the REAL GOOGLE QUERIES above — mirror the buyer's wording in the title and put the exact query (or closest variant) as keywords[0]. Proven demand beats guesses.` : ""}
+5. Put the primary buyer keyword as keywords[0] and end the description with [Intent: commercial] (services are commercial by default; use [Intent: transactional] only for hire/buy/pricing-angled ideas)
+${demandQueries.length ? `6. Base AT LEAST HALF the ideas on the REAL GOOGLE QUERIES above — mirror the buyer's wording in the title and put the exact query (or closest variant) as keywords[0]. Proven demand beats guesses.` : ""}
 
 Return a JSON array with this exact format:
 [

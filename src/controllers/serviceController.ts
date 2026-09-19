@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
 import { clearCache } from "../middleware/cache";
+import { applySeoFallbacks } from "../utils/seo";
 import { generateServiceThumbnail, buildThumbnailPrompt, THUMBNAIL_STYLES } from "../services/aiThumbnailGenerator";
 
 // GET /api/services — public, returns all active services
@@ -84,6 +85,14 @@ export const createService = async (req: Request, res: Response) => {
       return res.status(409).json({ success: false, error: "A service with this slug already exists" });
     }
 
+    // Safety net: never store empty meta tags.
+    const seo = applySeoFallbacks({
+      title: data.title,
+      description: data.description,
+      metaTitle: data.metaTitle,
+      metaDescription: data.metaDescription,
+    });
+
     const service = await prisma.service.create({
       data: {
         slug: data.slug,
@@ -100,8 +109,8 @@ export const createService = async (req: Request, res: Response) => {
         stack: data.stack || [],
         bestFor: data.bestFor || [],
         features: data.features || [],
-        metaTitle: data.metaTitle || null,
-        metaDescription: data.metaDescription || null,
+        metaTitle: seo.metaTitle,
+        metaDescription: seo.metaDescription,
         ogImage: data.ogImage || null,
         keywords: data.keywords || [],
         canonical: data.canonical || null,
@@ -143,6 +152,18 @@ export const updateService = async (req: Request, res: Response) => {
       }
     }
 
+    // Empty-string meta fields fall back instead of wiping good values.
+    const seo = applySeoFallbacks({
+      title: data.title !== undefined ? data.title : existing.title,
+      description: data.description !== undefined ? data.description : existing.description,
+      metaTitle: data.metaTitle !== undefined ? data.metaTitle : existing.metaTitle,
+      metaDescription:
+        data.metaDescription !== undefined ? data.metaDescription : existing.metaDescription,
+    });
+    const touchMetaTitle = data.metaTitle !== undefined || data.title !== undefined;
+    const touchMetaDesc =
+      data.metaDescription !== undefined || data.description !== undefined;
+
     const service = await prisma.service.update({
       where: { id: id as string },
       data: {
@@ -160,8 +181,8 @@ export const updateService = async (req: Request, res: Response) => {
         stack: data.stack ?? existing.stack,
         bestFor: data.bestFor ?? existing.bestFor,
         features: data.features ?? existing.features,
-        metaTitle: data.metaTitle ?? existing.metaTitle,
-        metaDescription: data.metaDescription ?? existing.metaDescription,
+        metaTitle: touchMetaTitle ? seo.metaTitle : existing.metaTitle,
+        metaDescription: touchMetaDesc ? seo.metaDescription : existing.metaDescription,
         ogImage: data.ogImage ?? existing.ogImage,
         keywords: data.keywords ?? existing.keywords,
         canonical: data.canonical ?? existing.canonical,

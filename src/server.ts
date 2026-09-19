@@ -18,6 +18,21 @@ const app = express();
 // Using `true` trusts all hops and correctly resolves client IP.
 app.set("trust proxy", true);
 
+// ─── SEO: never index the API origin ────────────────────────
+// api.raselhossain.dev is a JSON API, not a website. Google was crawling
+// "/" and "/api/*" ("Crawled - currently not indexed"). A robots.txt
+// disallow alone doesn't remove URLs that are already discovered, so send
+// X-Robots-Tag on every response (moves them to Excluded) plus a
+// disallow-all robots.txt to stop future crawling.
+app.use((_req, res, next) => {
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
+  next();
+});
+
+app.get("/robots.txt", (_req, res) => {
+  res.type("text/plain").send("User-agent: *\nDisallow: /\n");
+});
+
 // ─── Security ─────────────────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },

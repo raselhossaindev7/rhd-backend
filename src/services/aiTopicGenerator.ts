@@ -44,7 +44,9 @@ Rules:
 4. Target keywords should have good search volume and ranking potential (3-5 specific, non-generic phrases)
 5. Categories must be one of: ${BLOG_CATEGORIES.join(", ")}
 6. Return ONLY valid JSON array, no markdown or extra text
-7. Each topic must have: title, category, keywords (3-5), description (1-2 sentences)`;
+7. Each topic must have: title, category, keywords (3-5), description (1-2 sentences)
+8. keywords[0] MUST be the single primary keyword (the exact query this post targets)
+9. End every description with an intent tag: [Intent: informational], [Intent: commercial], [Intent: transactional] or [Intent: navigational] — tutorials/guides are informational, comparisons/reviews commercial, hire/buy/pricing transactional`;
 
 export interface TopicDemand {
   /** Real Google queries (US) — proven search intent, not guesses. */
@@ -99,7 +101,8 @@ Generate ${count} topics that:
 2. Focus on trending tech in 2026
 3. Are practical and educational
 4. Have good SEO potential
-${demandQueries.length ? `5. Base AT LEAST HALF the topics on the REAL GOOGLE QUERIES above — keep the searcher's wording/intent in the title and put the exact query (or closest variant) as keywords[0]. Proven demand beats guesses.` : ""}
+5. Put the primary keyword as keywords[0] and end the description with [Intent: informational|commercial|transactional|navigational]
+${demandQueries.length ? `6. Base AT LEAST HALF the topics on the REAL GOOGLE QUERIES above — keep the searcher's wording/intent in the title and put the exact query (or closest variant) as keywords[0]. Proven demand beats guesses.` : ""}
 
 Return a JSON array with this exact format:
 [

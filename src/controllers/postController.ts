@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../config/db";
 import { clearCache } from "../middleware/cache";
 import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
+import { applySeoFallbacks } from "../utils/seo";
 
 function shapePost(p: any) {
   return {
@@ -88,6 +89,8 @@ export async function getPost(req: Request, res: Response) {
 export async function createPost(req: Request, res: Response) {
   try {
     const d = req.body;
+    // Safety net: AI/manual paths must never store empty meta tags.
+    const seo = applySeoFallbacks(d);
 
     const post = await prisma.post.create({
       data: {
@@ -97,12 +100,12 @@ export async function createPost(req: Request, res: Response) {
         excerpt: d.excerpt,
         content: typeof d.content === "string" ? d.content : JSON.stringify(d.content || []),
         image: d.image || null,
-        readTime: d.readTime || "5 min read",
+        readTime: seo.readTime,
         date: d.date ? new Date(d.date) : new Date(),
         published: d.published || false,
         order: d.order || 0,
-        metaTitle: d.metaTitle || null,
-        metaDescription: d.metaDescription || null,
+        metaTitle: seo.metaTitle,
+        metaDescription: seo.metaDescription,
         ogImage: d.ogImage || null,
         keywords: d.keywords || [],
         canonical: d.canonical || null,
@@ -138,6 +141,19 @@ export async function updatePost(req: Request, res: Response) {
     const existing = await prisma.post.findUnique({ where: { id } });
     if (!existing) throw new ApiError(404, "Post not found");
 
+    // Empty-string meta fields fall back instead of wiping good values.
+    const nextTitle = d.title !== undefined ? d.title : existing.title;
+    const nextExcerpt = d.excerpt !== undefined ? d.excerpt : existing.excerpt;
+    const seo = applySeoFallbacks({
+      title: nextTitle,
+      excerpt: nextExcerpt,
+      content: d.content !== undefined ? d.content : existing.content,
+      metaTitle: d.metaTitle !== undefined ? d.metaTitle : existing.metaTitle,
+      metaDescription:
+        d.metaDescription !== undefined ? d.metaDescription : existing.metaDescription,
+      readTime: d.readTime !== undefined ? d.readTime : existing.readTime,
+    });
+
     const updateData: any = {
       ...(d.slug !== undefined && { slug: d.slug }),
       ...(d.title !== undefined && { title: d.title }),
@@ -145,12 +161,18 @@ export async function updatePost(req: Request, res: Response) {
       ...(d.excerpt !== undefined && { excerpt: d.excerpt }),
       ...(d.content !== undefined && { content: typeof d.content === "string" ? d.content : JSON.stringify(d.content) }),
       ...(d.image !== undefined && { image: d.image }),
-      ...(d.readTime !== undefined && { readTime: d.readTime }),
+      ...((d.readTime !== undefined || d.content !== undefined) && {
+        readTime: seo.readTime,
+      }),
       ...(d.date !== undefined && { date: new Date(d.date) }),
       ...(d.published !== undefined && { published: d.published }),
       ...(d.order !== undefined && { order: d.order }),
-      ...(d.metaTitle !== undefined && { metaTitle: d.metaTitle }),
-      ...(d.metaDescription !== undefined && { metaDescription: d.metaDescription }),
+      ...((d.metaTitle !== undefined || d.title !== undefined) && {
+        metaTitle: seo.metaTitle,
+      }),
+      ...((d.metaDescription !== undefined || d.excerpt !== undefined) && {
+        metaDescription: seo.metaDescription,
+      }),
       ...(d.ogImage !== undefined && { ogImage: d.ogImage }),
       ...(d.keywords !== undefined && { keywords: d.keywords }),
       ...(d.canonical !== undefined && { canonical: d.canonical }),

@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../config/db";
 import { clearCache } from "../middleware/cache";
 import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
+import { applySeoFallbacks } from "../utils/seo";
 
 // Shape project for API response — parse JSON fields
 function shapeProject(p: any) {
@@ -96,6 +97,13 @@ export async function createProject(req: Request, res: Response) {
   try {
     const d = req.body;
     const techNames = d.technologies || d.tech || [];
+    // Safety net: never store empty meta tags.
+    const seo = applySeoFallbacks({
+      title: d.title,
+      description: d.description,
+      metaTitle: d.metaTitle,
+      metaDescription: d.metaDescription,
+    });
 
     const project = await prisma.project.create({
       data: {
@@ -117,8 +125,8 @@ export async function createProject(req: Request, res: Response) {
         order: d.order || 0,
         highlights: d.highlights || [],
         quote: d.quote || null,
-        metaTitle: d.metaTitle || null,
-        metaDescription: d.metaDescription || null,
+        metaTitle: seo.metaTitle,
+        metaDescription: seo.metaDescription,
         ogImage: d.ogImage || null,
         keywords: d.keywords || [],
         canonical: d.canonical || null,
@@ -167,6 +175,18 @@ export async function updateProject(req: Request, res: Response) {
     const hasTechUpdate = techNames && Array.isArray(techNames);
     const hasMetricsUpdate = d.metrics && Array.isArray(d.metrics);
 
+    // Empty-string meta fields fall back instead of wiping good values.
+    const seo = applySeoFallbacks({
+      title: d.title !== undefined ? d.title : existing.title,
+      description: d.description !== undefined ? d.description : existing.description,
+      metaTitle: d.metaTitle !== undefined ? d.metaTitle : existing.metaTitle,
+      metaDescription:
+        d.metaDescription !== undefined ? d.metaDescription : existing.metaDescription,
+    });
+    const touchMetaTitle = d.metaTitle !== undefined || d.title !== undefined;
+    const touchMetaDesc =
+      d.metaDescription !== undefined || d.description !== undefined;
+
     // Delete old tech and metrics if being replaced
     if (hasTechUpdate || hasMetricsUpdate) {
       if (hasTechUpdate) await prisma.tech.deleteMany({ where: { projectId: id } });
@@ -192,8 +212,8 @@ export async function updateProject(req: Request, res: Response) {
       ...(d.order !== undefined && { order: d.order }),
       ...(d.highlights !== undefined && { highlights: d.highlights }),
       ...(d.quote !== undefined && { quote: d.quote }),
-      ...(d.metaTitle !== undefined && { metaTitle: d.metaTitle }),
-      ...(d.metaDescription !== undefined && { metaDescription: d.metaDescription }),
+      ...(touchMetaTitle && { metaTitle: seo.metaTitle }),
+      ...(touchMetaDesc && { metaDescription: seo.metaDescription }),
       ...(d.ogImage !== undefined && { ogImage: d.ogImage }),
       ...(d.keywords !== undefined && { keywords: d.keywords }),
       ...(d.canonical !== undefined && { canonical: d.canonical }),
