@@ -167,6 +167,34 @@ IMPORTANT: Return ONLY the JSON array, no markdown code blocks, no extra text.`;
 export async function saveTopics(topics: GeneratedTopic[]): Promise<number> {
   let saved = 0;
 
+  // Near-duplicate guard: the old exact-title check let
+  // "SSE vs WebSockets…" + "SSE vs WebSockets… (part 2)" style pairs
+  // through, which became slug-2 duplicate content in Google's eyes.
+  const normWords = (s: string) =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, " ")
+        .split(/\s+/)
+        .filter((w) => w.length > 2 && !new Set(["the", "and", "for", "with", "from", "2026", "2025"]).has(w))
+    );
+  const overlap = (a: Set<string>, b: Set<string>) => {
+    if (!a.size || !b.size) return 0;
+    let hit = 0;
+    for (const w of a) if (b.has(w)) hit++;
+    return hit / Math.min(a.size, b.size);
+  };
+
+  // Load recent post + queued topic titles once for similarity comparison.
+  const recentTitles: string[] = await prisma.post
+    .findMany({ select: { title: true }, orderBy: { date: "desc" }, take: 60 })
+    .then((rows) => rows.map((r) => r.title))
+    .catch(() => []);
+  const queuedTitles: string[] = await prisma.topic
+    .findMany({ select: { title: true }, orderBy: { createdAt: "desc" }, take: 60 })
+    .then((rows) => rows.map((r) => r.title))
+    .catch(() => []);
+
   for (const topic of topics) {
     // Check for duplicate titles
     const existing = await prisma.topic.findFirst({
@@ -174,6 +202,23 @@ export async function saveTopics(topics: GeneratedTopic[]): Promise<number> {
     });
 
     if (!existing) {
+      // Skip topics that are >70% word-overlap with an existing post/topic:
+      // they would publish as slug-2 near-duplicates and hurt indexing.
+      // Automation stays ON — the slot is simply refilled next cycle.
+      const cand = normWords(topic.title);
+      const pool = [
+        ...recentTitles,
+        ...queuedTitles,
+      ];
+      let tooSimilar = false;
+      for (const t of pool) {
+        if (overlap(cand, normWords(t)) >= 0.7) {
+          tooSimilar = true;
+          console.log(`[AI TOPIC] Skipped near-duplicate: "${topic.title}" ~ "${t}"`);
+          break;
+        }
+      }
+      if (tooSimilar) continue;
       await prisma.topic.create({
         data: {
           title: topic.title,

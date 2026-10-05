@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
 import { clearCache } from "../middleware/cache";
-import { applySeoFallbacks } from "../utils/seo";
+import { applySeoFallbacks, sanitizeStrArray, sanitizeFaq, sanitizeHowTo, sanitizeBlurb } from "../utils/seo";
 import { generateServiceThumbnail, buildThumbnailPrompt, THUMBNAIL_STYLES } from "../services/aiThumbnailGenerator";
 
 // GET /api/services — public, returns all active services
@@ -99,20 +99,20 @@ export const createService = async (req: Request, res: Response) => {
         icon: data.icon || "code",
         title: data.title,
         category: data.category,
-        description: data.description,
+        description: sanitizeBlurb(data.description, 10) || seo.metaDescription,
         overview: data.overview,
         image: data.image || null,
         order: data.order ?? 0,
         featured: data.featured ?? false,
         active: data.active ?? true,
-        deliverables: data.deliverables || [],
-        stack: data.stack || [],
-        bestFor: data.bestFor || [],
-        features: data.features || [],
+        deliverables: sanitizeStrArray(data.deliverables, 10),
+        stack: sanitizeStrArray(data.stack, 10),
+        bestFor: sanitizeStrArray(data.bestFor, 8),
+        features: sanitizeStrArray(data.features, 10),
         metaTitle: seo.metaTitle,
         metaDescription: seo.metaDescription,
         ogImage: data.ogImage || null,
-        keywords: data.keywords || [],
+        keywords: sanitizeStrArray(data.keywords, 8),
         canonical: data.canonical || null,
         geoRegion: data.geoRegion || null,
         geoPlaceName: data.geoPlaceName || null,
@@ -120,9 +120,9 @@ export const createService = async (req: Request, res: Response) => {
         geoCountry: data.geoCountry || null,
         areaServed: data.areaServed || "Worldwide",
         availableLanguages: data.availableLanguages || ["en"],
-        faqJson: data.faqJson || [],
-        howToSteps: data.howToSteps || [],
-        speakableText: data.speakableText || null,
+        faqJson: sanitizeFaq(data.faqJson),
+        howToSteps: sanitizeHowTo(data.howToSteps),
+        speakableText: sanitizeBlurb(data.speakableText, 40),
       },
     });
 
@@ -171,20 +171,22 @@ export const updateService = async (req: Request, res: Response) => {
         icon: data.icon ?? existing.icon,
         title: data.title ?? existing.title,
         category: data.category ?? existing.category,
-        description: data.description ?? existing.description,
+        description: data.description !== undefined
+          ? (sanitizeBlurb(data.description, 10) || seo.metaDescription)
+          : existing.description,
         overview: data.overview ?? existing.overview,
         image: data.image ?? existing.image,
         order: data.order ?? existing.order,
         featured: data.featured ?? existing.featured,
         active: data.active ?? existing.active,
-        deliverables: data.deliverables ?? existing.deliverables,
-        stack: data.stack ?? existing.stack,
-        bestFor: data.bestFor ?? existing.bestFor,
-        features: data.features ?? existing.features,
+        deliverables: data.deliverables !== undefined ? sanitizeStrArray(data.deliverables, 10) : sanitizeStrArray(existing.deliverables, 10),
+        stack: data.stack !== undefined ? sanitizeStrArray(data.stack, 10) : sanitizeStrArray(existing.stack, 10),
+        bestFor: data.bestFor !== undefined ? sanitizeStrArray(data.bestFor, 8) : sanitizeStrArray(existing.bestFor, 8),
+        features: data.features !== undefined ? sanitizeStrArray(data.features, 10) : sanitizeStrArray(existing.features, 10),
         metaTitle: touchMetaTitle ? seo.metaTitle : existing.metaTitle,
         metaDescription: touchMetaDesc ? seo.metaDescription : existing.metaDescription,
         ogImage: data.ogImage ?? existing.ogImage,
-        keywords: data.keywords ?? existing.keywords,
+        keywords: data.keywords !== undefined ? sanitizeStrArray(data.keywords, 8) : sanitizeStrArray(existing.keywords, 8),
         canonical: data.canonical ?? existing.canonical,
         geoRegion: data.geoRegion ?? existing.geoRegion,
         geoPlaceName: data.geoPlaceName ?? existing.geoPlaceName,
@@ -192,9 +194,9 @@ export const updateService = async (req: Request, res: Response) => {
         geoCountry: data.geoCountry ?? existing.geoCountry,
         areaServed: data.areaServed ?? existing.areaServed,
         availableLanguages: data.availableLanguages ?? existing.availableLanguages,
-        faqJson: data.faqJson ?? existing.faqJson,
-        howToSteps: data.howToSteps ?? existing.howToSteps,
-        speakableText: data.speakableText ?? existing.speakableText,
+        faqJson: data.faqJson !== undefined ? sanitizeFaq(data.faqJson) : sanitizeFaq(existing.faqJson),
+        howToSteps: data.howToSteps !== undefined ? sanitizeHowTo(data.howToSteps) : sanitizeHowTo(existing.howToSteps),
+        speakableText: data.speakableText !== undefined ? sanitizeBlurb(data.speakableText, 40) : existing.speakableText,
       },
     });
 

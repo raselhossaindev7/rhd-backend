@@ -4,6 +4,13 @@ import { ApiError, sendSuccess, sendError, slugify, parsePagination } from "../u
 import { generateServiceTopics, saveServiceTopics } from "../services/aiServiceTopicGenerator";
 import { getServiceDemandWithGsc } from "../services/demandSignals";
 import { generateService, ServiceData } from "../services/aiServiceGenerator";
+import {
+  sanitizeStrArray,
+  sanitizeFaq,
+  sanitizeHowTo,
+  sanitizeBlurb,
+  applySeoFallbacks,
+} from "../utils/seo";
 import { TopicStatus } from "@prisma/client";
 
 // ─── Service Autopilot (daily cadence, trending-first) ──
@@ -531,6 +538,15 @@ async function persistGeneratedService(topicId: string, serviceData: ServiceData
   // Resolve the final slug once, so retries reuse it (idempotent)
   const slug = await safeQuery(() => uniqueServiceSlug(serviceData.slug));
 
+  // Defense in depth: placeholder garbage must never reach the DB.
+  const seo = applySeoFallbacks({
+    title: serviceData.title,
+    excerpt: sanitizeBlurb(serviceData.description, 40) || serviceData.title,
+    content: serviceData.overview,
+    metaTitle: sanitizeBlurb(serviceData.metaTitle, 10),
+    metaDescription: sanitizeBlurb(serviceData.metaDescription, 40),
+  });
+
   const service = await safeQuery(async () => {
     const existing = await prisma.service.findUnique({ where: { slug } });
     if (existing) return existing;
@@ -540,20 +556,20 @@ async function persistGeneratedService(topicId: string, serviceData: ServiceData
         icon: serviceData.icon,
         title: serviceData.title,
         category: serviceData.category,
-        description: serviceData.description,
+        description: sanitizeBlurb(serviceData.description, 10) || seo.metaDescription,
         overview: serviceData.overview,
         image: serviceData.image,
         order: serviceData.order,
         featured: serviceData.featured,
         active: serviceData.active,
-        deliverables: serviceData.deliverables,
-        stack: serviceData.stack,
-        bestFor: serviceData.bestFor,
-        features: serviceData.features,
-        metaTitle: serviceData.metaTitle,
-        metaDescription: serviceData.metaDescription,
+        deliverables: sanitizeStrArray(serviceData.deliverables, 10),
+        stack: sanitizeStrArray(serviceData.stack, 10),
+        bestFor: sanitizeStrArray(serviceData.bestFor, 8),
+        features: sanitizeStrArray(serviceData.features, 10),
+        metaTitle: seo.metaTitle,
+        metaDescription: seo.metaDescription,
         ogImage: serviceData.ogImage,
-        keywords: serviceData.keywords,
+        keywords: sanitizeStrArray(serviceData.keywords, 8),
         canonical: serviceData.canonical,
         geoRegion: serviceData.geoRegion,
         geoPlaceName: serviceData.geoPlaceName,
@@ -561,9 +577,9 @@ async function persistGeneratedService(topicId: string, serviceData: ServiceData
         geoCountry: serviceData.geoCountry,
         areaServed: serviceData.areaServed,
         availableLanguages: serviceData.availableLanguages,
-        faqJson: serviceData.faqJson,
-        howToSteps: serviceData.howToSteps,
-        speakableText: serviceData.speakableText,
+        faqJson: sanitizeFaq(serviceData.faqJson),
+        howToSteps: sanitizeHowTo(serviceData.howToSteps),
+        speakableText: sanitizeBlurb(serviceData.speakableText, 40),
       },
     });
   });

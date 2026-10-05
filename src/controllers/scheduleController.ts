@@ -9,6 +9,13 @@ import { getBlogDemandWithGsc } from "../services/demandSignals";
 // force (?refresh=1) bypasses the 6h collector cache. First-ever call
 // takes ~10-20s (live Google fetches); later calls are instant.
 import { generateBlogPost, BlogPostData } from "../services/aiBlogGenerator";
+import {
+  sanitizeStrArray,
+  sanitizeFaq,
+  sanitizeHowTo,
+  sanitizeBlurb,
+  applySeoFallbacks,
+} from "../utils/seo";
 import { TopicStatus } from "@prisma/client";
 
 // ─── Generation concurrency guard ─────────────────────────
@@ -544,6 +551,16 @@ async function persistGeneratedPost(topicId: string, postData: BlogPostData) {
   // Resolve the final slug once, so retries reuse it (idempotent)
   const slug = await safeQuery(() => uniquePostSlug(postData.slug));
 
+  // Defense in depth: even if the generator is bypassed/upgraded, placeholder
+  // garbage must never reach the DB (automation stays ON, quality stays safe).
+  const seo = applySeoFallbacks({
+    title: postData.title,
+    excerpt: sanitizeBlurb(postData.excerpt, 40) || postData.title,
+    content: postData.content,
+    metaTitle: sanitizeBlurb(postData.metaTitle, 10),
+    metaDescription: sanitizeBlurb(postData.metaDescription, 40),
+  });
+
   const post = await safeQuery(async () => {
     const existing = await prisma.post.findUnique({
       where: { slug },
@@ -555,15 +572,15 @@ async function persistGeneratedPost(topicId: string, postData: BlogPostData) {
         slug,
         title: postData.title,
         category: postData.category,
-        excerpt: postData.excerpt,
+        excerpt: sanitizeBlurb(postData.excerpt, 40) || seo.metaDescription,
         content: postData.content,
         image: postData.image,
         readTime: postData.readTime,
         date: postData.date,
         published: postData.published,
-        metaTitle: postData.metaTitle,
-        metaDescription: postData.metaDescription,
-        keywords: postData.keywords,
+        metaTitle: seo.metaTitle,
+        metaDescription: seo.metaDescription,
+        keywords: sanitizeStrArray(postData.keywords, 8),
         ogImage: postData.ogImage,
         canonical: postData.canonical,
         geoRegion: postData.geoRegion,
@@ -572,12 +589,12 @@ async function persistGeneratedPost(topicId: string, postData: BlogPostData) {
         geoCountry: postData.geoCountry,
         areaServed: postData.areaServed,
         availableLanguages: postData.availableLanguages,
-        faqJson: postData.faqJson,
-        howToSteps: postData.howToSteps,
-        speakableText: postData.speakableText,
+        faqJson: sanitizeFaq(postData.faqJson),
+        howToSteps: sanitizeHowTo(postData.howToSteps),
+        speakableText: sanitizeBlurb(postData.speakableText, 40),
         scheduledAt: new Date(),
         tags: {
-          connectOrCreate: postData.tags.map((name) => ({
+          connectOrCreate: sanitizeStrArray(postData.tags, 5).map((name) => ({
             where: { name },
             create: { name },
           })),

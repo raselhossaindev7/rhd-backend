@@ -2,7 +2,13 @@ import { Request, Response } from "express";
 import prisma from "../config/db";
 import { clearCache } from "../middleware/cache";
 import { ApiError, sendSuccess, sendError, slugify } from "../utils/helpers";
-import { applySeoFallbacks } from "../utils/seo";
+import {
+  applySeoFallbacks,
+  sanitizeStrArray,
+  sanitizeFaq,
+  sanitizeHowTo,
+  sanitizeBlurb,
+} from "../utils/seo";
 
 function shapePost(p: any) {
   return {
@@ -89,15 +95,22 @@ export async function getPost(req: Request, res: Response) {
 export async function createPost(req: Request, res: Response) {
   try {
     const d = req.body;
-    // Safety net: AI/manual paths must never store empty meta tags.
-    const seo = applySeoFallbacks(d);
+    // Safety net: AI/manual paths must never store empty OR placeholder meta.
+    const seo = applySeoFallbacks({
+      title: d.title,
+      excerpt: d.excerpt,
+      content: d.content,
+      metaTitle: d.metaTitle,
+      metaDescription: d.metaDescription,
+      readTime: d.readTime,
+    });
 
     const post = await prisma.post.create({
       data: {
         slug: d.slug || slugify(d.title),
         title: d.title,
         category: d.category,
-        excerpt: d.excerpt,
+        excerpt: sanitizeBlurb(d.excerpt, 10) || seo.metaDescription,
         content: typeof d.content === "string" ? d.content : JSON.stringify(d.content || []),
         image: d.image || null,
         readTime: seo.readTime,
@@ -107,7 +120,7 @@ export async function createPost(req: Request, res: Response) {
         metaTitle: seo.metaTitle,
         metaDescription: seo.metaDescription,
         ogImage: d.ogImage || null,
-        keywords: d.keywords || [],
+        keywords: sanitizeStrArray(d.keywords, 8),
         canonical: d.canonical || null,
         geoRegion: d.geoRegion || null,
         geoPlaceName: d.geoPlaceName || null,
@@ -115,12 +128,12 @@ export async function createPost(req: Request, res: Response) {
         geoCountry: d.geoCountry || null,
         areaServed: d.areaServed || "Worldwide",
         availableLanguages: d.availableLanguages || ["en"],
-        faqJson: d.faqJson || [],
-        howToSteps: d.howToSteps || [],
-        speakableText: d.speakableText || null,
+        faqJson: sanitizeFaq(d.faqJson),
+        howToSteps: sanitizeHowTo(d.howToSteps),
+        speakableText: sanitizeBlurb(d.speakableText, 40),
         userId: d.userId || null,
         tags: d.tags
-          ? { connectOrCreate: d.tags.map((name: string) => ({ where: { name }, create: { name } })) }
+          ? { connectOrCreate: sanitizeStrArray(d.tags, 5).map((name: string) => ({ where: { name }, create: { name } })) }
           : {},
       },
       include: { tags: true },

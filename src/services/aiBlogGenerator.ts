@@ -3,6 +3,12 @@ import prisma from "../config/db";
 import { findImages, extractKeywords, normalizeImageUrl } from "./imageFinder";
 import { aiChatFull, extractJsonObject } from "./aiProvider";
 import { generateBlogThumbnail, GeneratedThumbnail } from "./aiThumbnailGenerator";
+import {
+  sanitizeStrArray,
+  sanitizeFaq,
+  sanitizeHowTo,
+  sanitizeBlurb,
+} from "../utils/seo";
 
 export interface BlogPostData {
   title: string;
@@ -237,26 +243,28 @@ Return ONLY the Markdown article. No JSON, no code fences around it.`;
   }
 
   // ── Step 2: small meta JSON (title + article opening as context) ──
+  // NOTE: field examples below are SHAPE-ONLY. Never copy their wording —
+  // every value must be written fresh from the article. Echoing example
+  // text ("keyword1", "Common question 1?"…) gets the post rejected by
+  // the sanitizer and left unpublished from search.
   const metaPrompt = `For the blog post titled "${title}" (category: ${category}), return ONLY this JSON object (no markdown, no code fences):
 
 {
-  "excerpt": "Compelling 120-160 character summary for the post card",
-  "metaTitle": "SEO-optimized title (45-60 chars, include primary keyword + brand)",
-  "metaDescription": "Compelling meta description (120-160 chars)",
-  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
-  "tags": ["tag1", "tag2", "tag3"],
+  "excerpt": "1-2 fresh sentences summarizing THIS article (never the words Compelling/summary/template)",
+  "metaTitle": "Fresh SEO title under 60 chars with the primary keyword (never the words SEO-optimized/example/placeholder)",
+  "metaDescription": "Fresh 120-160 char summary of THIS article (never the words Compelling/120-160/template)",
+  "keywords": ["5-8 fresh lowercase phrases from THIS article, never keyword1/keyword2/example"],
+  "tags": ["3-5 fresh tags, never tag1/tag2/example"],
   "faqJson": [
-    {"question": "Common question 1?", "answer": "Self-contained detailed answer..."},
-    {"question": "Common question 2?", "answer": "Self-contained detailed answer..."},
-    {"question": "Common question 3?", "answer": "Self-contained detailed answer..."}
+    {"question": "A real question a reader would ask about THIS topic (min 10 chars, never Common question)?", "answer": "A specific answer with details from the article (min 20 chars, never Self-contained/Detailed description)..."}
   ],
   "howToSteps": [
-    {"name": "Step 1 Title", "text": "Detailed step description..."},
-    {"name": "Step 2 Title", "text": "Detailed step description..."},
-    {"name": "Step 3 Title", "text": "Detailed step description..."}
+    {"name": "A real step title from THIS article (never Step 1 Title)", "text": "Concrete instructions (min 20 chars, never Detailed step description)..."}
   ],
-  "speakableText": "Standalone 40-60 word direct answer to the post's core question (voice search)"
+  "speakableText": "A fresh 40-60 word answer to the core question (never Standalone/voice search/template)"
 }
+
+RULES: 3-5 FAQ items, 3-5 howTo steps. Every string must be original text about THIS article — copying any example wording above invalidates the whole response.
 
 Article opening for context:
 ${article.slice(0, 800)}`;
@@ -312,6 +320,35 @@ ${article.slice(0, 800)}`;
     parsed = {};
   }
   parsed.content = article;
+
+  // ── Sanitize AI meta (automation stays ON, garbage never goes live) ──
+  // Lazy models echo the prompt's example wording. The sanitizers drop
+  // placeholder values; fallbacks below rebuild them from the real article
+  // so Google always sees unique, article-specific SEO fields.
+  const plainArticle = article
+    .replace(/[#>*_`[\]()!]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const articleBlurb = plainArticle.slice(0, 155).trim();
+  const safeExcerpt =
+    sanitizeBlurb(parsed.excerpt, 40) ||
+    (articleBlurb.length >= 40 ? articleBlurb : `${title} — practical notes by Rasel Hossain.`);
+  const safeMetaTitle =
+    sanitizeBlurb(parsed.metaTitle, 10).slice(0, 60) ||
+    `${title} | Rasel Hossain`.slice(0, 60);
+  const safeMetaDesc =
+    sanitizeBlurb(parsed.metaDescription, 40).slice(0, 160) ||
+    safeExcerpt.slice(0, 160);
+  const safeKeywords = sanitizeStrArray(parsed.keywords, 8);
+  const safeTags = sanitizeStrArray(parsed.tags, 5);
+  const safeFaq = sanitizeFaq(parsed.faqJson);
+  const safeHowTo = sanitizeHowTo(parsed.howToSteps);
+  const safeSpeakable = sanitizeBlurb(parsed.speakableText, 40);
+  if (!safeKeywords.length || !safeFaq.length) {
+    console.warn(
+      `[AI BLOG GENERATOR] Meta sanitized to keywords=${safeKeywords.length}, faq=${safeFaq.length}, howto=${safeHowTo.length} for "${title}"`
+    );
+  }
 
   // Build the complete blog post data
   const now = new Date();
@@ -370,15 +407,15 @@ ${article.slice(0, 800)}`;
     title,
     slug,
     category,
-    excerpt: parsed.excerpt || `${title} - A comprehensive guide by Rasel Hossain`,
+    excerpt: safeExcerpt,
     content: processedContent,
     image: featuredImage,
     readTime,
     date: now,
     published: true,
-    metaTitle: parsed.metaTitle || `${title} | Rasel Hossain`,
-    metaDescription: parsed.metaDescription || parsed.excerpt || "",
-    keywords: Array.isArray(parsed.keywords) ? parsed.keywords : keywords,
+    metaTitle: safeMetaTitle,
+    metaDescription: safeMetaDesc,
+    keywords: safeKeywords.length ? safeKeywords : keywords.slice(0, 8),
     ogImage: featuredImage,
     canonical: null,
     geoRegion: "BD-DH",
@@ -387,9 +424,9 @@ ${article.slice(0, 800)}`;
     geoCountry: "Bangladesh",
     areaServed: "Worldwide",
     availableLanguages: ["en"],
-    faqJson: Array.isArray(parsed.faqJson) ? parsed.faqJson : [],
-    howToSteps: Array.isArray(parsed.howToSteps) ? parsed.howToSteps : [],
-    speakableText: parsed.speakableText || "",
-    tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+    faqJson: safeFaq,
+    howToSteps: safeHowTo,
+    speakableText: safeSpeakable,
+    tags: safeTags,
   };
 }

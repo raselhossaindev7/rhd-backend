@@ -3,6 +3,12 @@ import prisma from "../config/db";
 import { findImages, extractKeywords } from "./imageFinder";
 import { generateServiceThumbnail } from "./aiThumbnailGenerator";
 import { aiChatFull, extractJsonObject } from "./aiProvider";
+import {
+  sanitizeStrArray,
+  sanitizeFaq,
+  sanitizeHowTo,
+  sanitizeBlurb,
+} from "../utils/seo";
 
 export interface ServiceData {
   title: string;
@@ -202,29 +208,31 @@ Return ONLY the Markdown overview. No JSON, no code fences around it.`;
   }
 
   // ── Step 2: small structured JSON (title + overview opening as context) ──
+  // NOTE: field examples below are SHAPE-ONLY. Never copy their wording —
+  // every value must be written fresh from the service. Echoing example
+  // text ("keyword1", "Buyer question 1?", "concrete item 1", "tech 1"…)
+  // gets the service rejected by the sanitizer and left thin for Google.
   const metaPrompt = `For the service titled "${title}" (category: ${category}), return ONLY this JSON object (no markdown, no code fences):
 
 {
-  "description": "1-2 sentence buyer-facing card description (120-160 chars)",
-  "deliverables": ["concrete item 1", "concrete item 2", "concrete item 3", "concrete item 4"],
-  "stack": ["tech 1", "tech 2", "tech 3", "tech 4"],
-  "bestFor": ["buyer segment 1", "buyer segment 2", "buyer segment 3"],
-  "features": ["capability 1", "capability 2", "capability 3", "capability 4"],
-  "metaTitle": "SEO title (45-60 chars, primary keyword + brand)",
-  "metaDescription": "Buyer-facing meta description (120-160 chars)",
-  "keywords": ["keyword1", "keyword2", "keyword3", "keyword4", "keyword5"],
+  "description": "1-2 fresh buyer-facing sentences about THIS service (120-160 chars, never template words)",
+  "deliverables": ["4-7 fresh concrete deliverables of THIS service, never concrete item 1/2/example"],
+  "stack": ["4-8 fresh real technologies for THIS service, never tech 1/2/example"],
+  "bestFor": ["3-5 fresh buyer segments for THIS service, never buyer segment 1/2/example"],
+  "features": ["4-8 fresh capabilities of THIS service, never capability 1/2/example"],
+  "metaTitle": "Fresh SEO title under 60 chars with the primary keyword (never example/placeholder words)",
+  "metaDescription": "Fresh buyer-facing meta description 120-160 chars (never example/placeholder words)",
+  "keywords": ["5-8 fresh lowercase buyer-intent phrases, never keyword1/keyword2/example"],
   "faqJson": [
-    {"question": "Buyer question 1?", "answer": "Self-contained detailed answer..."},
-    {"question": "Buyer question 2?", "answer": "Self-contained detailed answer..."},
-    {"question": "Buyer question 3?", "answer": "Self-contained detailed answer..."}
+    {"question": "A real buyer question about THIS service (min 10 chars, never Buyer question 1)?", "answer": "A specific answer with details (min 20 chars, never Self-contained/Detailed description)..."}
   ],
   "howToSteps": [
-    {"name": "Step 1 Title", "text": "Detailed step description..."},
-    {"name": "Step 2 Title", "text": "Detailed step description..."},
-    {"name": "Step 3 Title", "text": "Detailed step description..."}
+    {"name": "A real engagement step for THIS service (never Step 1 Title)", "text": "Concrete instructions (min 20 chars, never Detailed step description)..."}
   ],
-  "speakableText": "Standalone 40-60 word direct answer describing the service + outcome (voice search)"
+  "speakableText": "A fresh 40-60 word answer describing THIS service + outcome (never Standalone/template words)"
 }
+
+RULES: 3-5 FAQ items, 3-5 howTo steps. Every string must be original text about THIS service — copying any example wording above invalidates the whole response.
 
 Overview opening for context:
 ${overview.slice(0, 800)}`;
@@ -294,37 +302,66 @@ ${overview.slice(0, 800)}`;
     // Thumbnail must never fail generation — stock stands in.
   }
   console.log(`[AI SERVICE GENERATOR] Cover: ${coverSource}`);
-  const strArr = (v: unknown): string[] =>
-    Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean).slice(0, 10) : [];
+  // ── Sanitize AI meta (automation stays ON, garbage never goes live) ──
+  // Same guard as the blog generator: lazy models echo prompt examples.
+  const plainOverview = overview
+    .replace(/[#>*_`[\]()!]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const overviewBlurb = plainOverview.slice(0, 155).trim();
+  const safeDescription =
+    sanitizeBlurb(parsed.description, 40) ||
+    (overviewBlurb.length >= 40
+      ? overviewBlurb
+      : `${title} — done-for-you by Rasel Hossain.`);
+  const safeMetaTitle =
+    sanitizeBlurb(parsed.metaTitle, 10).slice(0, 60) ||
+    `${title} | Rasel Hossain`.slice(0, 60);
+  const safeMetaDesc =
+    sanitizeBlurb(parsed.metaDescription, 40).slice(0, 160) ||
+    safeDescription.slice(0, 160);
+  const safeKeywords = sanitizeStrArray(parsed.keywords, 8);
+  const safeFaq = sanitizeFaq(parsed.faqJson);
+  const safeHowTo = sanitizeHowTo(parsed.howToSteps);
+  const safeSpeakable = sanitizeBlurb(parsed.speakableText, 40);
+  // Content lists: drop prompt-echo rows ("concrete item 1", "tech 1"…).
+  // Empty lists render as nothing — thin schema is worse than none.
+  const safeList = (v: unknown, max: number): string[] =>
+    sanitizeStrArray(v, max).filter((s) => s.length >= 3);
+  if (!safeKeywords.length || !safeFaq.length) {
+    console.warn(
+      `[AI SERVICE GENERATOR] Meta sanitized to keywords=${safeKeywords.length}, faq=${safeFaq.length}, howto=${safeHowTo.length} for "${title}"`
+    );
+  }
 
   return {
     title,
     slug,
     icon: "code",
     category,
-    description: parsed.description || description || `${title} — done-for-you by Rasel Hossain`,
+    description: safeDescription,
     overview,
     image: featuredImage,
     order: 0,
     featured: false,
     active: true,
-    deliverables: strArr(parsed.deliverables),
-    stack: strArr(parsed.stack),
-    bestFor: strArr(parsed.bestFor),
-    features: strArr(parsed.features),
-    metaTitle: parsed.metaTitle || `${title} | Rasel Hossain`,
-    metaDescription: parsed.metaDescription || parsed.description || "",
+    deliverables: safeList(parsed.deliverables, 10),
+    stack: safeList(parsed.stack, 10),
+    bestFor: safeList(parsed.bestFor, 8),
+    features: safeList(parsed.features, 10),
+    metaTitle: safeMetaTitle,
+    metaDescription: safeMetaDesc,
     ogImage: featuredImage,
     canonical: null,
-    keywords: Array.isArray(parsed.keywords) ? parsed.keywords : keywords,
+    keywords: safeKeywords.length ? safeKeywords : keywords.slice(0, 8),
     geoRegion: "BD-DH",
     geoPlaceName: "Dhaka",
     geoPosition: "23.8103;90.4125",
     geoCountry: "Bangladesh",
     areaServed: "Worldwide",
     availableLanguages: ["en"],
-    faqJson: Array.isArray(parsed.faqJson) ? parsed.faqJson : [],
-    howToSteps: Array.isArray(parsed.howToSteps) ? parsed.howToSteps : [],
-    speakableText: parsed.speakableText || "",
+    faqJson: safeFaq,
+    howToSteps: safeHowTo,
+    speakableText: safeSpeakable,
   };
 }
