@@ -131,6 +131,9 @@ async function searchUnsplash(query: string, count: number): Promise<ImageResult
 const CATEGORY_TECH_QUERY: Record<string, string> = {
   Programming: "programming code computer",
   WordPress: "website cms blog development",
+  Shopify: "online store ecommerce website",
+  "Website Builders": "website builder design laptop",
+  "SEO & Tracking": "seo marketing digital analytics",
   "Digital Marketing": "seo marketing analytics dashboard",
   AI: "artificial intelligence robot technology",
   "Web & SaaS": "website development programming",

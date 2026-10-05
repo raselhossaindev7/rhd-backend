@@ -84,6 +84,14 @@ export type ThumbnailStyleId = keyof typeof THUMBNAIL_STYLES;
 // Category → premium 3D brand icons (generic, no trademarked names in prompt)
 function categoryVisual(category: string): string {
   const c = (category || "").toLowerCase();
+  // Niche platform categories first — "Website Builders" contains "web",
+  // so it must match before the generic programming branch below.
+  if (c.includes("shopify"))
+    return "glossy 3D shopping bag icon, 3D storefront, 3D checkout cart, 3D price tag, 3D product box";
+  if (c.includes("website builder") || c.includes("wix") || c.includes("webflow") || c.includes("squarespace") || c.includes("bigcommerce"))
+    return "glossy 3D website builder icon, 3D drag-drop blocks, 3D browser window, 3D theme palette, 3D storefront";
+  if (c.includes("tracking") || c.includes("gtm") || c.includes("pixel"))
+    return "glossy 3D analytics dashboard icon, 3D tag label, 3D tracking crosshair, 3D bar chart, 3D magnifying glass";
   if (c.includes("programming") || c.includes("web") || c.includes("saas") || c.includes("full stack"))
     return "glossy 3D code brackets icon, 3D browser window, 3D database icon, 3D server rack, 3D cloud upload";
   if (c.includes("mobile"))

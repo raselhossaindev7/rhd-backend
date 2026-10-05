@@ -10,9 +10,14 @@ interface GeneratedServiceTopic {
 
 // Trending service taxonomy — what buyers actually search for.
 // Must stay in sync with ServiceForm, demandSignals, imageFinder, thumbnail.
+// Rasel's core niche: CMS/e-commerce platforms + SEO/tracking — these
+// categories guarantee the autopilot covers his real expertise, not just code.
 export const SERVICE_CATEGORIES = [
   "Programming",
   "WordPress",
+  "Shopify",
+  "Website Builders",
+  "SEO & Tracking",
   "Digital Marketing",
   "AI",
   "Web & SaaS",
@@ -29,11 +34,16 @@ About Rasel:
 - Full Stack Developer, AI Automation Engineer & DevOps Specialist
 - 6+ years experience since 2020
 - Top Rated Seller on Fiverr with 168+ completed projects
+- CMS & e-commerce expert: WordPress/WooCommerce, Shopify, Wix, Webflow, Squarespace, BigCommerce
+- SEO & tracking expert: technical/on-page SEO, backlinks, AEO/GEO, GTM, Meta/TikTok pixels
 - Based in Bangladesh, works with international clients
 
 Existing services (DO NOT duplicate — propose NEW trending sellable offerings users actually search for):
 - Programming (Next.js, React, SaaS, Full Stack, Mobile App, DevOps, CRM/ERP)
 - WordPress (WordPress Development, WooCommerce, E-commerce)
+- Shopify (Shopify stores, theme setup, apps, headless Shopify)
+- Website Builders (Wix, Webflow, Squarespace, BigCommerce sites)
+- SEO & Tracking (SEO audits, backlinks, GTM, pixels, AEO/GEO)
 - Digital Marketing (SEO, Marketing Automation, Email Marketing)
 - AI (AI Integration, ChatGPT, Automation, Workflow Bots)
 
@@ -43,7 +53,7 @@ Rules:
    (clear outcome, clear buyer — e.g. "Next.js to React Native porting")
 3. Target keywords should have buyer intent (3-5 specific phrases a client would Google)
 4. Categories must be one of: ${SERVICE_CATEGORIES.join(", ")}
-5. NEVER use trademarked brand names in service titles — use generic terms instead
+5. Platform/CMS names (WordPress, Shopify, Wix, Webflow, Squarespace, BigCommerce, WooCommerce) ARE allowed in titles — they are factual service descriptors Rasel sells, not trademark abuse. Other third-party trademarks stay generic.
 6. NEVER copy competitor service names or phrasing
 7. Focus on trending topics that buyers actually search for in 2026
 8. Each service must solve a real problem — not just list technologies

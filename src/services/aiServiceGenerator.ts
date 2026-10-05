@@ -47,6 +47,8 @@ About Rasel:
 - Full Stack Developer, AI Automation Engineer & DevOps Specialist
 - 6+ years experience since 2020
 - Top Rated Seller on Fiverr with 168+ completed projects
+- CMS & e-commerce expert: WordPress/WooCommerce, Shopify, Wix, Webflow, Squarespace, BigCommerce
+- SEO & tracking expert: technical/on-page SEO, backlinks, AEO/GEO, GTM, Meta/TikTok pixels
 - Based in Bangladesh, works with international clients worldwide
 
 Writing Style (buyer-first, never robotic):
@@ -75,9 +77,9 @@ SEO Requirements:
 Rules:
 1. 100% unique and original, genuinely helpful — never copy existing content
 2. NEVER copy text from any competitor website, blog or marketing material
-3. NEVER use trademarked brand names (Salesforce, HubSpot, Shopify, etc.) in headings — only in plain comparison sentences with "like" or "such as"
+3. NEVER use third-party trademarked brand names (Salesforce, HubSpot, etc.) in headings — EXCEPT platform/CMS names Rasel sells (WordPress, WooCommerce, Shopify, Wix, Webflow, Squarespace, BigCommerce), which stay factual in headings and copy
 4. NEVER use stock phrases like "best quality", "world-class", "cutting-edge" — use concrete specifics instead
-5. Use generic technology names where possible (e.g. "CMS" instead of "WordPress", "e-commerce platform" instead of "Shopify", "CRM software" instead of "Salesforce")
+5. Platform names above stay as-is everywhere (titles, stack, keywords); other tech gets generic names where possible (e.g. "CRM software" instead of "Salesforce")
 6. Write content that helps buyers make a decision — not just SEO filler
 7. Overview: 500-800 words of Markdown (H2/H3, what's included, process, outcomes)
 8. Meta title: 45-60 characters, include primary keyword
