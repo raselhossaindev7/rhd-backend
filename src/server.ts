@@ -93,6 +93,22 @@ const clientIp = (req: express.Request): string => {
 const isLocalhost = (ip: string | undefined) =>
   !ip || ip === "::1" || ip === "127.0.0.1" || ip.startsWith("::ffff:127.") || ip.startsWith("::ffff:192.168.");
 
+// First-party server-to-server bypass. The frontend's SSR (sitemap,
+// listings, detail pages) originates from a handful of hosting egress IPs,
+// so it shares ONE rate-limit bucket. During a Google crawl burst, enough
+// concurrent SSR can 429 our own frontend: the sitemap then silently
+// shrinks to static-only slugs (a mass-deindex signal) and the /api/*
+// rewrite surfaces 429s ("Other 4xx" in Search Console). A shared secret
+// exempts these calls; browsers never carry the header. Set the same
+// INTERNAL_API_KEY in the backend env and the frontend env (server-only,
+// never NEXT_PUBLIC_). Empty/unset = bypass disabled.
+function isInternalRequest(req: express.Request): boolean {
+  const expected = process.env.INTERNAL_API_KEY;
+  if (!expected) return false;
+  const sent = req.headers["x-internal-key"];
+  return typeof sent === "string" && sent.length === expected.length && sent === expected;
+}
+
 const limiter = rateLimit({
   windowMs: config.rateLimitWindowMs,
   max: config.rateLimitMax,
@@ -108,6 +124,7 @@ const limiter = rateLimit({
   skip: (req) => {
     // Skip health checks and localhost in dev
     if (req.path === "/health" || req.path === "/api/health") return true;
+    if (isInternalRequest(req)) return true;
     if (config.isDev && isLocalhost(req.ip)) return true;
     return false;
   },
@@ -127,10 +144,21 @@ const authLimiter = rateLimit({
   },
 });
 
-app.use("/api/", limiter);
-app.use("/api/auth/login", authLimiter);
-app.use("/api/auth/register", authLimiter);
-app.use("/api/auth/forgot-password", authLimiter);
+// Kill-switch: set RATE_LIMIT_ENABLED=false to disable all rate limiting
+// (all limiters below are skipped). Default is enabled — the limiters
+// protect login brute force, public chat credit burn, and contact spam.
+// Prefer keeping it enabled: first-party SSR already bypasses the main
+// limiter via INTERNAL_API_KEY, so legitimate frontend traffic is safe.
+const RATE_LIMIT_ENABLED = process.env.RATE_LIMIT_ENABLED !== "false";
+
+if (RATE_LIMIT_ENABLED) {
+  app.use("/api/", limiter);
+  app.use("/api/auth/login", authLimiter);
+  app.use("/api/auth/register", authLimiter);
+  app.use("/api/auth/forgot-password", authLimiter);
+} else {
+  console.warn("WARNING: rate limiting is DISABLED (RATE_LIMIT_ENABLED=false).");
+}
 
 // Public AI chat burns provider credits per request — strict per-IP budget
 const chatLimiter = rateLimit({
@@ -146,7 +174,9 @@ const chatLimiter = rateLimit({
     });
   },
 });
-app.use("/api/chat", chatLimiter);
+if (RATE_LIMIT_ENABLED) {
+  app.use("/api/chat", chatLimiter);
+}
 
 // ─── Body Parsing ─────────────────────────────────────────
 app.use(express.json({ limit: "10mb" }));

@@ -1,6 +1,6 @@
 import { slugify } from "../utils/helpers";
 import prisma from "../config/db";
-import { findImages, extractKeywords } from "./imageFinder";
+import { findImages, extractKeywords, rehostImagesToR2 } from "./imageFinder";
 import { generateServiceThumbnail } from "./aiThumbnailGenerator";
 import { aiChatFull, extractJsonObject } from "./aiProvider";
 import {
@@ -132,7 +132,11 @@ export async function generateService(
   }
 
   const imageKeywords = extractKeywords(title, category);
-  const images = await findImages(imageKeywords, 2, category, { exclude });
+  // Rehost to R2 (see aiBlogGenerator): stored covers must be permanent.
+  const images = await rehostImagesToR2(
+    await findImages(imageKeywords, 2, category, { exclude }),
+    "services"
+  );
 
   // AI cover starts NOW in the background (30-120s) while the overview +
   // meta AI calls run — awaited at the end, so it adds ~zero latency.

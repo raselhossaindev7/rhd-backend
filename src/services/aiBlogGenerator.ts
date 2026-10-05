@@ -1,6 +1,6 @@
 import { slugify } from "../utils/helpers";
 import prisma from "../config/db";
-import { findImages, extractKeywords, normalizeImageUrl } from "./imageFinder";
+import { findImages, extractKeywords, normalizeImageUrl, rehostImagesToR2 } from "./imageFinder";
 import { aiChatFull, extractJsonObject } from "./aiProvider";
 import { generateBlogThumbnail, GeneratedThumbnail } from "./aiThumbnailGenerator";
 import {
@@ -155,7 +155,13 @@ export async function generateBlogPost(
   }
 
   const imageKeywords = extractKeywords(title, category);
-  const images = await findImages(imageKeywords, 3, category, { exclude });
+  // Rehost to R2 immediately: third-party stock URLs (notably Pixabay
+  // `/get/` tokens) expire, which broke in-article images on older posts.
+  // Stored content + covers below all use permanent R2 URLs.
+  const images = await rehostImagesToR2(
+    await findImages(imageKeywords, 3, category, { exclude }),
+    "blog"
+  );
 
   // AI cover starts NOW in the background (30-120s) while the article +
   // meta AI calls run — awaited at the end, so it adds ~zero latency.

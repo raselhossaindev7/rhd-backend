@@ -16,6 +16,14 @@ interface ImageResult {
   alt: string;
   source: string;
   credit?: string;
+  /**
+   * Permanent fallback when `url` itself is fragile. Pixabay's
+   * `largeImageURL` is a short-lived `/get/` CDN token (400s once stale);
+   * `webformatURL` is the same photo on permanent `cdn.pixabay.com`.
+   * Used when R2 rehosting fails so stored content never keeps an
+   * expiring URL.
+   */
+  fallbackUrl?: string;
 }
 
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY || "";
@@ -97,10 +105,13 @@ async function searchPixabay(query: string, count: number): Promise<ImageResult[
   return ((data.hits || []) as any[])
     .filter((h) => h?.largeImageURL || h?.webformatURL || h?.previewURL)
     .map((h: any) => ({
+      // largeImageURL is full-res (best for R2 rehost) but expires;
+      // webformatURL is the permanent CDN copy used if rehost fails.
       url: h.largeImageURL || h.webformatURL || h.previewURL || "",
       alt: h.tags || query,
       source: "pixabay",
       credit: h.user ? `Image by ${h.user} on Pixabay` : undefined,
+      fallbackUrl: h.webformatURL || h.previewURL || undefined,
     }));
 }
 
@@ -244,6 +255,75 @@ function aiGeneratedImages(
 export interface FindImagesOptions {
   /** Recently used image URLs — these are skipped, never returned. */
   exclude?: string[];
+}
+
+// ─── R2 rehosting (permanent self-hosted images) ────────────
+// Autopilot used to embed third-party stock URLs directly into post
+// content. Pixabay `/get/` CDN tokens expire (HTTP 400 + HTML body once
+// stale), which rendered as broken-image icons mid-article on 21 posts.
+// Every chosen image is now downloaded at generation time and rehosted on
+// our R2 (immutable cache), so published content never depends on a
+// third-party token lifetime. Any failure returns a permanent fallback
+// (or the original URL) — rehosting must never fail generation.
+import { uploadToR2, generateKey } from "../config/r2";
+import { config } from "../config/env";
+
+const REHOST_TIMEOUT_MS = 20000;
+const REHOST_MAX_BYTES = 8 * 1024 * 1024;
+
+function extFor(contentType: string): string {
+  if (contentType === "image/png") return "png";
+  if (contentType === "image/webp") return "webp";
+  if (contentType === "image/gif") return "gif";
+  if (contentType === "image/avif") return "avif";
+  if (contentType === "image/svg+xml") return "svg";
+  return "jpg";
+}
+
+/** Download `url` and rehost on R2. Returns the permanent R2 URL, or a
+ *  safe fallback (permanent `fallbackUrl` first, else the original) when
+ *  R2 is unconfigured or the download fails. */
+export async function rehostImageToR2(
+  url: string,
+  folder: string,
+  fallbackUrl?: string
+): Promise<string> {
+  const safeFallback =
+    fallbackUrl && /^https:\/\//.test(fallbackUrl) ? fallbackUrl : url;
+  try {
+    if (!url || !/^https:\/\//.test(url)) return safeFallback;
+    if (!config.r2.bucketName || !config.r2.publicUrl) return safeFallback;
+    if (url.startsWith(config.r2.publicUrl)) return url;
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(REHOST_TIMEOUT_MS),
+      headers: { "User-Agent": "raselhossain.dev autopilot" },
+    });
+    if (!res.ok) return safeFallback;
+    const contentType = (res.headers.get("content-type") || "")
+      .split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (!contentType.startsWith("image/")) return safeFallback;
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (!buf.length || buf.length > REHOST_MAX_BYTES) return safeFallback;
+    const key = generateKey(folder, `rehost.${extFor(contentType)}`);
+    return await uploadToR2(buf, key, contentType);
+  } catch {
+    return safeFallback;
+  }
+}
+
+/** Rehost a full candidate list (cover + inline images). Order preserved. */
+export async function rehostImagesToR2(
+  images: ImageResult[],
+  folder: string
+): Promise<ImageResult[]> {
+  return Promise.all(
+    images.map(async (img) => ({
+      ...img,
+      url: await rehostImageToR2(img.url, folder, img.fallbackUrl),
+    }))
+  );
 }
 
 export async function findImages(
